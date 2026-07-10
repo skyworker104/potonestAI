@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+dist/
+ios/
+android/
+*.log
+.DS_Store
+src/lib/assistant.test.js

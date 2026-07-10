@@ -1,0 +1,31 @@
+# ===== 민감/비밀 (절대 커밋 금지) =====
+# data/: DB, 썸네일, 얼굴, 그리고 API 키가 든 app/settings.json
+data/
+# OpenRouter API 키 평문 저장 — 명시적 재확인
+data/app/settings.json
+*.env
+.env
+
+# ===== 개인 데이터 / 대용량 =====
+# 사용자 사진·동영상 (27GB)
+photos/
+# install.sh가 환경별로 생성 (호스트 바인딩 포함)
+run.sh
+
+# ===== 파이썬 =====
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== Node / Expo (mobile) =====
+mobile/node_modules/
+mobile/.expo/
+node_modules/
+
+# ===== OS / 에디터 =====
+.DS_Store
+*.log
+.idea/
+.vscode/

@@ -1,0 +1,8 @@
+sentence-transformers>=2.2,<3
+torch>=2.0
+# 이미지 의미 검색용 SigLIP2 다국어 인코더 (google/siglip2-base-patch16-256 자동 다운로드)
+transformers>=4.45
+# 코멘트 문장 의미 검색용 (paraphrase-multilingual-MiniLM-L12-v2 자동 다운로드)
+# 사진 속 글자(OCR) 검색용 — tesseract 바이너리가 없으면 자동으로 비활성화됨
+# (macOS: brew install tesseract tesseract-lang / Debian·라즈베리파이: apt install tesseract-ocr tesseract-ocr-kor)
+pytesseract>=0.3

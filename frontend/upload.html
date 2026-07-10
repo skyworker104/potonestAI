@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f1117">
+<title>PhotoNest 폰 업로드</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  background: #0f1117; color: #e8eaf0; min-height: 100vh;
+  display: flex; flex-direction: column; padding: 20px 16px 40px;
+}
+h1 { font-size: 22px; margin-bottom: 4px; }
+h1 span { background: linear-gradient(90deg,#4f8cff,#7c5cff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sub { color: #8b91a3; font-size: 13px; margin-bottom: 18px; }
+label { font-size: 13px; color: #8b91a3; display: block; margin: 12px 0 5px; }
+#device {
+  width: 100%; background: #1e2230; border: 1px solid #2c3245; border-radius: 10px;
+  color: #e8eaf0; padding: 11px 14px; font-size: 15px; outline: none;
+}
+#pick-btn {
+  margin-top: 18px; width: 100%; padding: 18px;
+  background: linear-gradient(135deg,#4f8cff,#7c5cff); color: #fff;
+  border: none; border-radius: 14px; font-size: 17px; font-weight: 600; cursor: pointer;
+}
+#pick-btn:disabled { opacity: .5; }
+.note { font-size: 12px; color: #8b91a3; margin-top: 10px; line-height: 1.6; }
+#summary { margin-top: 16px; font-size: 14px; min-height: 20px; }
+#summary strong { color: #4f8cff; }
+#progress-wrap { margin-top: 8px; background: #1e2230; border-radius: 8px; height: 10px; overflow: hidden; display: none; }
+#progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg,#4f8cff,#2dd4a0); transition: width .2s; }
+#file-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.frow {
+  display: flex; align-items: center; gap: 10px;
+  background: #171a23; border-radius: 9px; padding: 9px 12px; font-size: 13px;
+}
+.frow .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .st { font-size: 12px; color: #8b91a3; white-space: nowrap; }
+.frow.saved .st { color: #2dd4a0; }
+.frow.duplicate .st { color: #f5c542; }
+.frow.error .st { color: #ff5c7a; }
+.toggle { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; color: #8b91a3; }
+</style>
+</head>
+<body>
+<h1>📷 PhotoNest <span>폰 업로드</span></h1>
+<div class="sub">선택한 사진·동영상이 원본 그대로(화질·촬영정보·위치정보 무손실) 전송됩니다</div>
+
+<label for="device">기기 이름 (저장 폴더로 사용)</label>
+<input id="device" type="text" placeholder="예: 아빠폰" value="">
+
+<button id="pick-btn">📤 사진·동영상 선택해서 올리기</button>
+<input id="file-input" type="file" multiple accept="image/*,video/*" hidden>
+
+<div class="toggle">
+  <input type="checkbox" id="resend"> <label for="resend" style="margin:0">이미 보낸 파일도 다시 보내기</label>
+</div>
+
+<div class="note">
+  ⚠️ <strong>위치정보(GPS)는 브라우저 업로드로 보존이 어렵습니다</strong>: 안드로이드(특히 삼성 등)는
+  브라우저로 사진을 넘길 때 위치를 가려서 보냅니다. "둘러보기/내 파일"로 골라도 제거될 수 있어요.
+  촬영시각·화질 등 나머지는 그대로 보존됩니다.<br>
+  &nbsp;&nbsp;✅ <strong>위치까지 확실히 보존</strong>: <strong>PhotoSync/FolderSync 자동 백업(WebDAV)</strong>을
+  사용하세요 — 시스템 위치 권한으로 원본 GPS가 보존됩니다 (PC 화면 '폰 연결' 탭 참고).<br>
+  &nbsp;&nbsp;✅ <strong>이미 올린 사진</strong>은 PC에서 사진을 열고 <strong>지도를 클릭해 위치를 직접 지정</strong>할 수 있어요.<br>
+  ⓘ 아이폰: 사진 선택 시 "원본"을 유지하려면 설정→사진→'원본 유지'를 권장합니다.
+</div>
+
+<div id="summary"></div>
+<div id="progress-wrap"><div id="progress-bar"></div></div>
+<div id="file-list"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const deviceInput = $("#device");
+deviceInput.value = localStorage.getItem("pn_device") || "";
+deviceInput.onchange = () => localStorage.setItem("pn_device", deviceInput.value);
+
+// 보낸 파일 기억 (이름+크기+수정시각) — 다음에 같은 파일 선택해도 스킵
+const sentKey = "pn_sent";
+const sent = new Set(JSON.parse(localStorage.getItem(sentKey) || "[]"));
+const fpOf = f => `${f.name}|${f.size}|${f.lastModified}`;
+function rememberSent(f) {
+  sent.add(fpOf(f));
+  localStorage.setItem(sentKey, JSON.stringify([...sent].slice(-20000)));
+}
+
+$("#pick-btn").onclick = () => $("#file-input").click();
+
+$("#file-input").onchange = async (e) => {
+  let files = [...e.target.files];
+  e.target.value = "";
+  if (!files.length) return;
+
+  const resend = $("#resend").checked;
+  const skipped = files.filter(f => !resend && sent.has(fpOf(f))).length;
+  if (!resend) files = files.filter(f => !sent.has(fpOf(f)));
+
+  const list = $("#file-list");
+  list.innerHTML = "";
+  const rows = new Map();
+  for (const f of files) {
+    const div = document.createElement("div");
+    div.className = "frow";
+    div.innerHTML = `<span class="name">${f.name}</span><span class="st">대기</span>`;
+    list.appendChild(div);
+    rows.set(f, div);
+  }
+
+  const device = deviceInput.value.trim() || "phone";
+  let done = 0, saved = 0, dup = 0, err = 0;
+  const total = files.length;
+  $("#progress-wrap").style.display = total ? "block" : "none";
+  $("#pick-btn").disabled = true;
+
+  const updateSummary = () => {
+    $("#summary").innerHTML =
+      `<strong>${done}/${total}</strong> 완료 · 저장 ${saved} · 중복 ${dup}` +
+      (err ? ` · <span style="color:#ff5c7a">실패 ${err}</span>` : "") +
+      (skipped ? ` · 이전에 보낸 ${skipped}장 건너뜀` : "");
+    $("#progress-bar").style.width = total ? (done / total * 100) + "%" : "0%";
+  };
+  updateSummary();
+
+  // 동시 3개씩 업로드
+  const queue = [...files];
+  async function worker() {
+    while (queue.length) {
+      const f = queue.shift();
+      const row = rows.get(f);
+      row.querySelector(".st").textContent = "업로드 중…";
+      try {
+        const fd = new FormData();
+        fd.append("files", f, f.name);
+        fd.append("device", device);
+        fd.append("meta", JSON.stringify({ [f.name]: f.lastModified }));
+        const r = await fetch("/api/upload", { method: "POST", body: fd });
+        const data = await r.json();
+        const st = (data.results && data.results[0] && data.results[0].status) || "error";
+        if (st === "saved") { saved++; row.className = "frow saved"; row.querySelector(".st").textContent = "✅ 저장됨"; rememberSent(f); }
+        else if (st === "duplicate") { dup++; row.className = "frow duplicate"; row.querySelector(".st").textContent = "이미 있음"; rememberSent(f); }
+        else { err++; row.className = "frow error"; row.querySelector(".st").textContent = "실패"; }
+      } catch (_) {
+        err++; row.className = "frow error"; row.querySelector(".st").textContent = "실패 (네트워크)";
+      }
+      done++;
+      updateSummary();
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  $("#pick-btn").disabled = false;
+  $("#summary").innerHTML += " — 완료! 추가로 더 올릴 수 있어요.";
+};
+</script>
+</body>
+</html>

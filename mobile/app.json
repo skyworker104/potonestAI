@@ -1,0 +1,70 @@
+{
+  "expo": {
+    "name": "PhotoNest 업로더",
+    "slug": "photonest-uploader",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "photonest",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#0f1117",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.y73bs.photonest.uploader",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "사진을 백업하기 위해 사진 라이브러리에 접근합니다. 사진은 회원님의 PhotoNest 서버로만 전송됩니다.",
+        "NSLocationWhenInUseUsageDescription": "사진의 촬영 위치(GPS)를 보존해 업로드하기 위해 사용합니다.",
+        "NSLocalNetworkUsageDescription": "같은 와이파이에 있는 회원님의 PhotoNest 서버에 사진을 업로드하기 위해 로컬 네트워크에 접근합니다.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.photonest.uploader",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_MEDIA_LOCATION",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "FOREGROUND_SERVICE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_MEDIA_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "사진을 백업하기 위해 접근합니다.",
+          "savePhotosPermission": "백업한 사진을 저장합니다.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      "expo-task-manager",
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": { "usesCleartextTraffic": true }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "fdf2c72c-3ede-4321-b43a-7b96da598c74"
+      }
+    },
+    "owner": "y73bs104"
+  }
+}

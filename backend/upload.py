@@ -18,12 +18,33 @@ from pathlib import Path
 from typing import List, Optional
 from xml.sax.saxutils import escape
 
+import numpy as np
 from fastapi import APIRouter, Form, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import db, indexer
 
 router = APIRouter()
+
+
+def _valid_client_vec(vec_json, model):
+    """폰이 보낸 임베딩 검증 — 모델 태그·차원·유한값·정규화 확인 후 재정규화.
+
+    통과 못 하면 None (조용히 버리고 서버 backfill이 나중에 계산).
+    """
+    from . import clip_onnx, embedder
+    if model != clip_onnx.MODEL_TAG or embedder.model_id() != model:
+        return None
+    try:
+        v = np.asarray(json.loads(vec_json), dtype=np.float32)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if v.shape != (clip_onnx.DIM,) or not np.isfinite(v).all():
+        return None
+    n = float(np.linalg.norm(v))
+    if not (0.5 < n < 2.0):  # 정상 정규화 벡터 근처만 허용
+        return None
+    return v / n
 
 UPLOAD_DIR_NAME = "MobileBackup"
 
@@ -89,11 +110,17 @@ def server_info():
     finally:
         s.close()
     port = int(os.environ.get("PORT", 8765))
+    from . import embedder
     return {
         "ip": ip,
         "port": port,
         "upload_url": f"http://{ip}:{port}/upload",
         "webdav_url": f"http://{ip}:{port}/webdav",
+        # 폰 임베딩 오프로드: 서버가 CLIP-ONNX일 때만 (SigLIP과 벡터 비호환).
+        # 폰 브라우저가 transformers.js로 같은 모델을 돌려 벡터를 함께 올린다.
+        "embed_offload": embedder.name() == "clip-onnx",
+        "embed_model_tag": embedder.model_id(),
+        "hf_model": "Xenova/clip-vit-base-patch32",
     }
 
 
@@ -104,11 +131,14 @@ async def upload(
     files: List[UploadFile] = File(...),
     device: str = Form("phone"),
     meta: str = Form("{}"),  # {filename: lastModified(ms)} — EXIF 없는 파일 날짜 보존
+    embedding: Optional[str] = Form(None),     # 폰이 계산한 CLIP 벡터 (JSON 배열)
+    embed_model: Optional[str] = Form(None),   # 벡터를 만든 모델 태그
 ):
     try:
         meta_map = json.loads(meta)
     except Exception:
         meta_map = {}
+    client_vec = _valid_client_vec(embedding, embed_model) if embedding else None
     device = "".join(ch for ch in device if ch.isalnum() or ch in "-_가-힣a-zA-Z") or "phone"
     dest_dir = _upload_root() / device
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +163,8 @@ async def upload(
             dst = _unique_path(dest_dir, name)
             tmp.rename(dst)
             _recent_hashes.add(h)
+            if client_vec is not None:  # 폰이 만든 임베딩 — 색인 시 부착
+                db.save_pending_embedding(h, embed_model, client_vec)
             lm = meta_map.get(f.filename)
             if lm:  # 파일 수정시각을 촬영 추정시각으로 보존
                 try:

@@ -58,6 +58,14 @@ CREATE TABLE IF NOT EXISTS persons (
   name TEXT,
   cover_face_id INTEGER
 );
+-- 폰이 업로드와 함께 보낸 임베딩 (색인 전 임시 보관 — 콘텐츠 해시 키).
+-- 인덱서가 해당 파일을 색인할 때 모델이 맞으면 media.embedding으로 옮긴다.
+CREATE TABLE IF NOT EXISTS pending_embeddings (
+  hash TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  vec BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 MIGRATIONS = [
@@ -351,6 +359,31 @@ def load_embeddings(model=None, dim=768):
     ids = [r["id"] for r in rows]
     mat = np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
     return ids, mat
+
+
+def save_pending_embedding(hash_, model, vec):
+    """폰이 보낸 임베딩을 색인 전 임시 보관 (같은 해시 재업로드는 덮어씀)."""
+    with conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO pending_embeddings (hash, model, vec, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (hash_, model, vec.astype(np.float32).tobytes(),
+             datetime.now().isoformat()),
+        )
+
+
+def pop_pending_embedding(hash_):
+    """해시로 보관된 임베딩을 꺼내고 삭제. (model, vec) 또는 (None, None)."""
+    if not hash_:
+        return None, None
+    with conn() as c:
+        row = c.execute(
+            "SELECT model, vec FROM pending_embeddings WHERE hash=?", (hash_,)
+        ).fetchone()
+        if not row:
+            return None, None
+        c.execute("DELETE FROM pending_embeddings WHERE hash=?", (hash_,))
+    return row["model"], np.frombuffer(row["vec"], dtype=np.float32)
 
 
 def missing_embedding_ids(model=None):

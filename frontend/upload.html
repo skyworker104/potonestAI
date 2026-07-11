@@ -58,6 +58,13 @@ label { font-size: 13px; color: #8b91a3; display: block; margin: 12px 0 5px; }
   <input type="checkbox" id="resend"> <label for="resend" style="margin:0">이미 보낸 파일도 다시 보내기</label>
 </div>
 
+<!-- 폰 임베딩 오프로드 — 서버가 경량(CLIP-ONNX) 백엔드일 때만 표시 -->
+<div class="toggle" id="embed-toggle-wrap" style="display:none">
+  <input type="checkbox" id="embed-toggle">
+  <label for="embed-toggle" style="margin:0">🧠 폰에서 AI 색인까지 계산해서 올리기
+    <small style="color:#8b91a3">(서버 부담↓ · 최초 1회 모델 ~90MB 다운로드 후 캐시)</small></label>
+</div>
+
 <div class="note">
   ⚠️ <strong>위치정보(GPS)는 브라우저 업로드로 보존이 어렵습니다</strong>: 안드로이드(특히 삼성 등)는
   브라우저로 사진을 넘길 때 위치를 가려서 보냅니다. "둘러보기/내 파일"로 골라도 제거될 수 있어요.
@@ -85,6 +92,45 @@ const fpOf = f => `${f.name}|${f.size}|${f.lastModified}`;
 function rememberSent(f) {
   sent.add(fpOf(f));
   localStorage.setItem(sentKey, JSON.stringify([...sent].slice(-20000)));
+}
+
+// ---- 폰 임베딩 오프로드 (서버가 CLIP-ONNX 백엔드일 때만) ----
+// 서버와 같은 모델(Xenova/clip-vit-base-patch32, 양자화)을 transformers.js로 돌려
+// 벡터가 서버 계산과 호환된다. 실패하면 조용히 빠지고 서버 backfill이 계산한다.
+let offloadInfo = null;
+let embedderP = null;
+fetch("/api/server-info").then(r => r.json()).then(info => {
+  offloadInfo = info;
+  if (info.embed_offload) {
+    $("#embed-toggle-wrap").style.display = "flex";
+    $("#embed-toggle").checked = localStorage.getItem("pn_embed") !== "0";
+  }
+}).catch(() => {});
+$("#embed-toggle").onchange = e =>
+  localStorage.setItem("pn_embed", e.target.checked ? "1" : "0");
+
+function loadEmbedder() {
+  if (!embedderP) {
+    embedderP = (async () => {
+      const { AutoProcessor, CLIPVisionModelWithProjection, RawImage } =
+        await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+      const m = offloadInfo.hf_model;
+      const processor = await AutoProcessor.from_pretrained(m);
+      const vision = await CLIPVisionModelWithProjection.from_pretrained(m); // 양자화 기본 — 서버와 동일
+      return { processor, vision, RawImage };
+    })();
+  }
+  return embedderP;
+}
+
+async function computeEmbedding(file) {
+  const { processor, vision, RawImage } = await loadEmbedder();
+  const image = await RawImage.fromBlob(file);
+  const inputs = await processor(image);
+  const { image_embeds } = await vision(inputs);
+  const v = Array.from(image_embeds.data);
+  const n = Math.hypot(...v) || 1;
+  return v.map(x => +(x / n).toFixed(6));  // 정규화 + 전송량 절감
 }
 
 $("#pick-btn").onclick = () => $("#file-input").click();
@@ -130,12 +176,25 @@ $("#file-input").onchange = async (e) => {
     while (queue.length) {
       const f = queue.shift();
       const row = rows.get(f);
+      // 폰 임베딩 계산 (이미지만 — HEIC 등 디코딩 불가 포맷은 조용히 건너뜀)
+      let vec = null;
+      if (offloadInfo && offloadInfo.embed_offload && $("#embed-toggle").checked
+          && f.type.startsWith("image/")) {
+        try {
+          row.querySelector(".st").textContent = "🧠 색인 계산…";
+          vec = await computeEmbedding(f);
+        } catch (_) { vec = null; }
+      }
       row.querySelector(".st").textContent = "업로드 중…";
       try {
         const fd = new FormData();
         fd.append("files", f, f.name);
         fd.append("device", device);
         fd.append("meta", JSON.stringify({ [f.name]: f.lastModified }));
+        if (vec) {
+          fd.append("embedding", JSON.stringify(vec));
+          fd.append("embed_model", offloadInfo.embed_model_tag);
+        }
         const r = await fetch("/api/upload", { method: "POST", body: fd });
         const data = await r.json();
         const st = (data.results && data.results[0] && data.results[0].status) || "error";

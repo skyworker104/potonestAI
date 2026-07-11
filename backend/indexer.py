@@ -378,6 +378,16 @@ def _index_file(p: Path, existing):
         "sig": sig, "hash": content_hash(p),
     }
     db.upsert_media(meta)
+
+    # 폰이 업로드와 함께 보낸 임베딩이 있으면 부착 (backfill 계산 생략)
+    pmodel, pvec = db.pop_pending_embedding(meta["hash"])
+    if pvec is not None:
+        try:
+            from . import embedder
+            if ai_available() and pmodel == embedder.model_id():
+                db.set_embedding(item_id, pvec, pmodel)
+        except Exception:
+            pass
     return item_id
 
 

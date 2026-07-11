@@ -522,6 +522,26 @@ def ocr_texts():
     return [(r["id"], r["ocr_text"]) for r in rows]
 
 
+def caption_texts():
+    """자동 캡션이 있는 활성 미디어의 (id, caption) 목록 — 단어 연관검색용."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT id, caption FROM media "
+            "WHERE trashed_at IS NULL AND caption IS NOT NULL AND caption != ''"
+        ).fetchall()
+    return [(r["id"], r["caption"]) for r in rows]
+
+
+def album_name_media():
+    """(media_id, album_name) 전체 목록 — 앨범명 연관검색용 (앨범 수는 소규모)."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT ai.media_id, a.name FROM album_items ai "
+            "JOIN albums a ON a.id = ai.album_id"
+        ).fetchall()
+    return [(r["media_id"], r["name"]) for r in rows]
+
+
 def add_face(media_id, bbox, embedding):
     with conn() as c:
         cur = c.execute(

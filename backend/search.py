@@ -169,6 +169,43 @@ def _ocr_matches(search_text, allowed_ids, by_id, top_k):
     return out[:top_k]
 
 
+def _word_frac(words, text):
+    """질의 단어 중 text에 포함된 비율 (0~1)."""
+    low = text.lower()
+    return sum(1 for w in words if w in low) / len(words)
+
+
+def _named_matches(search_text, allowed_ids, by_id):
+    """앨범명·코멘트·캡션·경로(폴더/파일명) 단어 일치 — 고유명사 연관검색.
+
+    "씨메르 사진"처럼 이미지 모델이 알 수 없는 고유명사는 사용자가 붙인
+    이름(앨범·코멘트)과 폴더명에서 찾아야 한다. AI 없이도 동작한다.
+    반환: {media_id: (일치비율 0~1, 가중치)} — 앨범명은 명시적 분류라 가중 1.5.
+    """
+    words = [w.lower() for w in re.split(r"\s+", (search_text or "").strip())
+             if len(w) >= 2]
+    if not words:
+        return {}
+    hits = {}  # id → (frac, weight)
+
+    def _add(mid, frac, weight):
+        if frac <= 0 or mid not in allowed_ids:
+            return
+        cur = hits.get(mid)
+        if cur is None or frac * weight > cur[0] * cur[1]:
+            hits[mid] = (frac, weight)
+
+    for mid, name in db.album_name_media():
+        _add(mid, _word_frac(words, name), 1.5)
+    for mid, text in db.caption_texts():
+        _add(mid, _word_frac(words, text), 1.0)
+    for mid, it in by_id.items():
+        if it.get("comment"):
+            _add(mid, _word_frac(words, it["comment"]), 1.0)
+        _add(mid, _word_frac(words, it["path"]), 1.0)
+    return hits
+
+
 def find(search_text, date_from=None, date_to=None, media_type=None,
          raw_query=None, only_ids=None, bbox=None, exclude_ids=None, top_k=MAX_RESULTS):
     from . import places
@@ -190,25 +227,39 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         # 검색어 없이 위치/인물/날짜만 → 최신순
         return [dict(it, score=None) for it in candidates[:top_k]]
 
-    if not indexer.ai_available():
-        return [dict(it, score=None) for it in _metadata_find(search_text, candidates, top_k)]
-
     by_id = {it["id"]: it for it in candidates}
     allowed_ids = set(by_id)
 
     from . import embedder, skills
     P = embedder.params()
 
+    # 지시어("사진 찾아줘" 등)를 제거한 핵심 주제어
+    subject = skills._core(search_text)
+
+    # 0) 이름 연관검색 — 앨범명·코멘트·캡션·폴더명 단어 일치 (AI 불필요).
+    #    고유명사("씨메르")는 이미지 모델이 알 수 없어 이 경로가 유일하다.
+    named_hits = _named_matches(subject, allowed_ids, by_id)
+    # 앨범명 등 명시적 이름 매치는 관련도 컷(top_k=60)의 예외 —
+    # "씨메르 사진"이면 그 앨범 전체가 나와야 한다.
+    if named_hits:
+        top_k = max(top_k, len(named_hits))
+
+    if not indexer.ai_available():
+        merged = {mid: (P["ocr_base"] + P["ocr_span"] * frac * w)
+                  for mid, (frac, w) in named_hits.items()}
+        for it in _metadata_find(search_text, candidates, top_k):
+            merged.setdefault(it["id"], P["ocr_base"])
+        ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
+        return [dict(by_id[mid], score=round(s, 3)) for mid, s in ranked]
+
     # 1) 이미지 의미 검색 (같은 모델로 만든 벡터만 — 백엔드 간 비호환)
+    # 핵심 주제어(subject)로 인코딩 — 문장 전체를 넣으면 임베딩이 희석돼
+    # 점수가 임계 근처로 떨어짐 ("강아지 사진 찾아줘" 0.10 vs "강아지" 0.13).
     image_hits = {}  # id → score
     ids, emb = db.load_embeddings(embedder.model_id(), embedder.dim())
     pos = {mid: i for i, mid in enumerate(ids)}
     idxs = [pos[it["id"]] for it in candidates if it["id"] in pos]
     cand = [it for it in candidates if it["id"] in pos]
-    # 지시어("사진 찾아줘" 등)를 제거한 핵심 주제어로 인코딩한다.
-    # 문장 전체를 넣으면 임베딩이 희석돼 점수가 임계 근처로 떨어짐
-    # ("강아지 사진 찾아줘" 0.10 vs "강아지" 0.13).
-    subject = skills._core(search_text)
     if idxs:
         qtext = _to_english(subject) if embedder.needs_english() else subject
         qv = embedder.encode_text([qtext])[0]
@@ -237,8 +288,12 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     )
 
     # 5) 병합 — 코멘트/캡션은 문장 설명이므로 강한 매칭은 상위에 오도록.
-    #    문장 유사도(0.42~1.0)·OCR 일치비율(0~1)을 백엔드 이미지 점수대로 사상
+    #    문장 유사도(0.42~1.0)·OCR 일치비율(0~1)을 백엔드 이미지 점수대로 사상.
+    #    이름 매치(앨범명 가중 1.5)는 이미지 점수대 위로 올라가 최상위 랭크.
     merged = dict(image_hits)
+    for mid, (frac, w) in named_hits.items():
+        nscore = P["ocr_base"] + P["ocr_span"] * frac * w
+        merged[mid] = max(merged.get(mid, 0.0), nscore)
     for it, csim in comment_hits:
         cscore = P["text_base"] + (csim - COMMENT_THRESHOLD) * P["text_span"]
         merged[it["id"]] = max(merged.get(it["id"], 0.0), cscore)

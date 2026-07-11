@@ -1,0 +1,7 @@
+# 저사양 기기용 경량 AI 검색 백엔드 (torch 불필요, requirements-ai.txt 대체)
+# 이미지 의미 검색: CLIP ViT-B/32 ONNX (Xenova/clip-vit-base-patch32 자동 다운로드 ~150MB)
+# 한국어 질의는 OpenRouter(또는 내장 사전)가 영어로 변환해 검색한다.
+onnxruntime>=1.17
+tokenizers>=0.15
+# 참고: 코멘트 문장 의미검색(sentence-transformers)은 torch 기반이라 이 구성에선
+# 비활성화된다 — 코멘트는 검색되지 않는 게 아니라 문장 유사도 매칭만 빠진다.

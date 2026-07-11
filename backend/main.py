@@ -117,11 +117,13 @@ def status():
         return "heuristic"
 
     engine = _resolve_engine()
+    from . import embedder
     llm_info = {
         "engine": engine,
         "engine_mode": mode,
         "llm_name": openrouter.config()[1] if engine == "openrouter" else name,
         "llm_model": openrouter.config()[1] if engine == "openrouter" else model,
+        "embed_backend": embedder.name(),
     }
     ts = takeout.get_state()
     return dict(

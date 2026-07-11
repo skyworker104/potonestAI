@@ -1,10 +1,10 @@
-"""의미 검색(SigLIP2 다국어) + 코멘트 문장 검색 + 메타데이터 폴백 + 날짜/타입 필터.
+"""의미 검색(임베딩 백엔드) + 코멘트 문장 검색 + 메타데이터 폴백 + 날짜/타입 필터.
 
-이미지 의미 검색은 SigLIP2가 한국어 질의를 번역 없이 직접 이해한다.
+이미지 의미 검색 백엔드는 embedder가 플랫폼에 맞게 선택한다:
+  - SigLIP2(torch): 다국어 — 한국어 질의를 번역 없이 직접 이해
+  - CLIP-ONNX(저사양): 영어 전용 — 질의를 영어로 변환해 검색(_to_english)
+점수 임계값·사상 파라미터는 백엔드별 분포가 달라 embedder.params()가 제공한다.
 AI가 꺼져 있으면(저사양 기기) 파일명·날짜 기반 검색으로 동작한다.
-
-점수 스케일 주의: SigLIP2는 sigmoid 손실이라 코사인 유사도 절대값이
-CLIP보다 낮게 분포한다 (좋은 매칭 ~0.10-0.16). 임계값은 이에 맞춰 설정.
 """
 import re
 from datetime import datetime
@@ -15,14 +15,35 @@ from . import db, indexer
 
 _comment_model = None
 
-# SigLIP2 sigmoid 스케일 기준 임계값.
-# 점수가 압축돼 있어(있는 주제 ~0.13-0.18, 없는 주제 ~0.09-0.12) 절대 분리가
-# 완전치 않다. 절대 하한은 명백한 노이즈만 걷어내고, 실제 결과 압축은
-# 상대 마진(top에서 이 이상 떨어지면 제외)으로 한다.
-SCORE_THRESHOLD = 0.10   # 이보다 낮으면 '매칭 없음'으로 간주
-SCORE_MARGIN = 0.025     # 최고 점수에서 이 이상 떨어지면 제외 (상대 컷오프)
-COMMENT_THRESHOLD = 0.42  # 코멘트(문장 의미) 매칭 하한
+COMMENT_THRESHOLD = 0.42  # 코멘트(문장 의미) 매칭 하한 — 백엔드와 무관한 문장 모델
 MAX_RESULTS = 60
+
+# 질의 영어 변환 캐시 (CLIP 백엔드용 — 스킬 재사용 시 같은 주제어가 반복됨)
+_en_cache = {}
+_HANGUL = re.compile(r"[가-힣]")
+
+
+def _to_english(text):
+    """한국어 검색 주제어 → 영어 키워드 (CLIP 텍스트 인코더가 영어 전용).
+
+    우선순위: OpenRouter 번역(품질) → 내장 KO_EN 사전 → 원문.
+    결과는 프로세스 수명 동안 캐시한다.
+    """
+    if not _HANGUL.search(text):
+        return text  # 이미 영어/숫자
+    if text in _en_cache:
+        return _en_cache[text]
+    en = None
+    try:
+        from . import openrouter
+        en = openrouter.translate(text)
+    except Exception:
+        pass
+    if not en:
+        from . import llm
+        en = llm._ko_to_en(text)
+    _en_cache[text] = en or text
+    return _en_cache[text]
 
 
 def get_comment_model():
@@ -126,6 +147,7 @@ def _ocr_matches(search_text, allowed_ids, by_id, top_k):
 
     OCR 텍스트는 문장이 아니라 스캔된 단편이라 임베딩 유사도보다
     부분일치(포함 여부)가 더 정확하고 예측 가능하다.
+    (item, 일치비율 0~1) 반환 — 점수 사상은 호출부가 백엔드 스케일로 한다.
     """
     if not search_text:
         return []
@@ -142,8 +164,7 @@ def _ocr_matches(search_text, allowed_ids, by_id, top_k):
         low = text.lower()
         hit_n = sum(1 for w in words if w.lower() in low)
         if hit_n:
-            score = 0.10 + 0.06 * (hit_n / len(words))  # 부분일치 0.10~전체일치 0.16
-            out.append((by_id[mid], score))
+            out.append((by_id[mid], hit_n / len(words)))
     out.sort(key=lambda x: -x[1])
     return out[:top_k]
 
@@ -175,24 +196,27 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     by_id = {it["id"]: it for it in candidates}
     allowed_ids = set(by_id)
 
-    # 1) 이미지 의미 검색 (SigLIP2 — 한국어 질의 직접 이해)
+    from . import embedder, skills
+    P = embedder.params()
+
+    # 1) 이미지 의미 검색 (같은 모델로 만든 벡터만 — 백엔드 간 비호환)
     image_hits = {}  # id → score
-    ids, emb = db.load_embeddings()
+    ids, emb = db.load_embeddings(embedder.model_id(), embedder.dim())
     pos = {mid: i for i, mid in enumerate(ids)}
     idxs = [pos[it["id"]] for it in candidates if it["id"] in pos]
     cand = [it for it in candidates if it["id"] in pos]
+    # 지시어("사진 찾아줘" 등)를 제거한 핵심 주제어로 인코딩한다.
+    # 문장 전체를 넣으면 임베딩이 희석돼 점수가 임계 근처로 떨어짐
+    # ("강아지 사진 찾아줘" 0.10 vs "강아지" 0.13).
+    subject = skills._core(search_text)
     if idxs:
-        from . import siglip, skills
-        # 지시어("사진 찾아줘" 등)를 제거한 핵심 주제어로 인코딩한다.
-        # 문장 전체를 넣으면 임베딩이 희석돼 점수가 임계 근처로 떨어짐
-        # ("강아지 사진 찾아줘" 0.10 vs "강아지" 0.13).
-        subject = skills._core(search_text)
-        qv = siglip.encode_text([subject])[0]
+        qtext = _to_english(subject) if embedder.needs_english() else subject
+        qv = embedder.encode_text([qtext])[0]
         scores = emb[idxs] @ qv
         order = np.argsort(-scores)
         top = float(scores[order[0]])
-        if top >= SCORE_THRESHOLD:
-            cutoff = max(SCORE_THRESHOLD, top - SCORE_MARGIN)
+        if top >= P["score_threshold"]:
+            cutoff = max(P["score_threshold"], top - P["score_margin"])
             for oi in order[:top_k]:
                 s = float(scores[oi])
                 if s < cutoff:
@@ -205,23 +229,24 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     )
 
     # 3) OCR(사진 속 글자) 검색 — 핵심 주제어 기준 부분일치
-    ocr_hits = _ocr_matches(subject if idxs else search_text, allowed_ids, by_id, top_k)
+    ocr_hits = _ocr_matches(subject, allowed_ids, by_id, top_k)
 
     # 4) 자동 캡션 의미 검색 (비전 LLM이 생성한 문장 — 신규 사진만 존재)
     caption_hits = _caption_matches(
         raw_query or search_text, allowed_ids, by_id, top_k
     )
 
-    # 5) 병합 — 코멘트/캡션은 문장 설명이므로 강한 매칭은 상위에 오도록
-    #    문장 유사도(0.42~1.0)를 SigLIP2 이미지 점수대(~0.05~0.16)로 사상
+    # 5) 병합 — 코멘트/캡션은 문장 설명이므로 강한 매칭은 상위에 오도록.
+    #    문장 유사도(0.42~1.0)·OCR 일치비율(0~1)을 백엔드 이미지 점수대로 사상
     merged = dict(image_hits)
     for it, csim in comment_hits:
-        cscore = 0.06 + (csim - COMMENT_THRESHOLD) * 0.12
+        cscore = P["text_base"] + (csim - COMMENT_THRESHOLD) * P["text_span"]
         merged[it["id"]] = max(merged.get(it["id"], 0.0), cscore)
-    for it, oscore in ocr_hits:
+    for it, frac in ocr_hits:
+        oscore = P["ocr_base"] + P["ocr_span"] * frac
         merged[it["id"]] = max(merged.get(it["id"], 0.0), oscore)
     for it, csim in caption_hits:
-        cscore = 0.06 + (csim - COMMENT_THRESHOLD) * 0.12
+        cscore = P["text_base"] + (csim - COMMENT_THRESHOLD) * P["text_span"]
         merged[it["id"]] = max(merged.get(it["id"], 0.0), cscore)
 
     if not merged:

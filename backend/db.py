@@ -74,6 +74,12 @@ MIGRATIONS = [
     # 비용이 커 신규 사진에만 적용(indexer._run_pipeline 참고), 기존 사진은 소급 안 함.
     "ALTER TABLE media ADD COLUMN caption TEXT",
     "ALTER TABLE media ADD COLUMN caption_emb BLOB",
+    # 임베딩을 만든 모델 태그 — 백엔드(SigLIP2/CLIP-ONNX)가 달라지면 벡터가
+    # 비호환이므로, 검색은 같은 모델끼리만 비교하고 불일치분은 재색인한다.
+    "ALTER TABLE media ADD COLUMN embed_model TEXT",
+    # 태그 도입 전의 임베딩은 전부 SigLIP2였음 — 소급 태깅 (멱등)
+    "UPDATE media SET embed_model='google/siglip2-base-patch16-256' "
+    "WHERE embedding IS NOT NULL AND embed_model IS NULL",
 ]
 
 
@@ -130,11 +136,11 @@ def upsert_media(meta, embedding=None):
         )
 
 
-def set_embedding(media_id, embedding):
+def set_embedding(media_id, embedding, model=None):
     with conn() as c:
         c.execute(
-            "UPDATE media SET embedding=? WHERE id=?",
-            (embedding.astype(np.float32).tobytes(), media_id),
+            "UPDATE media SET embedding=?, embed_model=? WHERE id=?",
+            (embedding.astype(np.float32).tobytes(), model, media_id),
         )
 
 
@@ -328,28 +334,36 @@ def duplicate_groups():
 
 # ---------- 임베딩 (검색용 행렬) ----------
 
-def load_embeddings():
-    """임베딩이 있는 활성 미디어의 (ids, 행렬) 반환."""
+def load_embeddings(model=None, dim=768):
+    """임베딩이 있는 활성 미디어의 (ids, 행렬) 반환.
+
+    model을 주면 그 모델로 만든 벡터만 (백엔드 간 벡터 비호환 — embedder 참고).
+    """
+    q = "SELECT id, embedding FROM media WHERE trashed_at IS NULL AND embedding IS NOT NULL"
+    args = ()
+    if model:
+        q += " AND embed_model=?"
+        args = (model,)
     with conn() as c:
-        rows = c.execute(
-            "SELECT id, embedding FROM media "
-            "WHERE trashed_at IS NULL AND embedding IS NOT NULL"
-        ).fetchall()
+        rows = c.execute(q, args).fetchall()
     if not rows:
-        return [], np.zeros((0, 768), dtype=np.float32)  # SigLIP2 임베딩 차원
+        return [], np.zeros((0, dim), dtype=np.float32)
     ids = [r["id"] for r in rows]
     mat = np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
     return ids, mat
 
 
-def missing_embedding_ids():
+def missing_embedding_ids(model=None):
+    """임베딩이 없거나(모델 지정 시) 다른 모델로 만들어진 미디어 id — 재색인 대상."""
+    if model:
+        q = ("SELECT id FROM media WHERE trashed_at IS NULL "
+             "AND (embedding IS NULL OR COALESCE(embed_model,'') != ?)")
+        args = (model,)
+    else:
+        q = "SELECT id FROM media WHERE trashed_at IS NULL AND embedding IS NULL"
+        args = ()
     with conn() as c:
-        return [
-            r["id"]
-            for r in c.execute(
-                "SELECT id FROM media WHERE trashed_at IS NULL AND embedding IS NULL"
-            ).fetchall()
-        ]
+        return [r["id"] for r in c.execute(q, args).fetchall()]
 
 
 # ---------- 앨범 ----------

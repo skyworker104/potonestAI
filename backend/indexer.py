@@ -57,11 +57,11 @@ _index_lock = threading.Lock()
 
 
 def ai_available():
-    """이미지 의미 검색(SigLIP2) 사용 가능 여부."""
+    """이미지 의미 검색 사용 가능 여부 (백엔드는 embedder가 자동 선택)."""
     if not AI_ENABLED:
         return False
-    from . import siglip
-    return siglip.available()
+    from . import embedder
+    return embedder.available()
 
 
 def text_ai_available():
@@ -374,11 +374,12 @@ def _index_file(p: Path, existing):
 
 
 def _embed_missing():
-    """임베딩 없는 미디어를 배치로 인코딩 (SigLIP2, AI 활성 시)."""
-    ids = db.missing_embedding_ids()
+    """임베딩이 없거나 다른 모델로 만든 미디어를 배치로 인코딩 (AI 활성 시)."""
+    from . import embedder
+    model = embedder.model_id()
+    ids = db.missing_embedding_ids(model)
     if not ids:
         return
-    from . import siglip
     for i in range(0, len(ids), 16):
         batch = ids[i : i + 16]
         images, valid = [], []
@@ -389,9 +390,9 @@ def _embed_missing():
                 valid.append(mid)
         if not images:
             continue
-        vecs = siglip.encode_images(images, batch_size=8)
+        vecs = embedder.encode_images(images, batch_size=8)
         for mid, v in zip(valid, vecs):
-            db.set_embedding(mid, v)
+            db.set_embedding(mid, v, model)
         _state["done"] = min(_state["done"] + len(valid), _state["total"])
 
 
@@ -448,8 +449,9 @@ def _run_pipeline(force):
         _state["ready"] = True
 
         if ai_available():
+            from . import embedder
             _state["phase"] = "AI 색인"
-            _state["total"] = len(db.missing_embedding_ids())
+            _state["total"] = len(db.missing_embedding_ids(embedder.model_id()))
             _state["done"] = 0
             _embed_missing()
             _state["ai_ready"] = True

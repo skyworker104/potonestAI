@@ -45,6 +45,35 @@ def parse(message, history=None, today=None):
     )
 
 
+def translate(text, timeout=15):
+    """한국어 사진검색 주제어 → 간결한 영어 키워드. 실패/키없음 시 None.
+
+    CLIP 텍스트 인코더(영어 전용) 백엔드에서 검색 질의 변환에 쓴다.
+    """
+    key, model = config()
+    if not key or not model:
+        return None
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system",
+             "content": "Translate the Korean photo-search keywords into concise "
+                        "English keywords for an image search engine. "
+                        "Output ONLY the English keywords, nothing else."},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0, "max_tokens": 60,
+    }
+    try:
+        d = local_llm._http_json(f"{settings.OPENROUTER_BASE}/chat/completions",
+                                 payload, timeout=timeout, key=key,
+                                 extra_headers=_HEADERS)
+        out = (d["choices"][0]["message"].get("content") or "").strip()
+        return out or None
+    except Exception:
+        return None
+
+
 def test_key(key: str, model: str = None):
     """키 유효성 확인. (ok, message) 반환.
 

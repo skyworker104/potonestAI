@@ -1,13 +1,18 @@
-"""미디어 폴더 스캔 → SQLite 색인. EXIF/GPS, 썸네일, 중복 해시, (선택) CLIP 임베딩.
+"""미디어 폴더 스캔 → SQLite 색인. EXIF/GPS, 썸네일, 중복 해시, (선택) 의미 임베딩.
 
-AI 색인은 선택형: AI_SEARCH=0 이거나 sentence-transformers 미설치면
+AI 색인은 선택형: AI_SEARCH=0 이거나 임베딩 백엔드 미설치면
 메타데이터만 색인하고 의미 검색은 비활성화된다 (저사양 기기 대응).
+
+임베딩은 별도 백그라운드 스레드에서 메모리 인식 스로틀로 천천히 채운다
+(_embed_backfill) — 사진은 색인 즉시 메타/OCR/얼굴로 검색 가능하고,
+의미 검색은 backfill이 진행되는 만큼 점진적으로 좋아진다.
 """
 import hashlib
 import json
 import os
 import struct
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -52,8 +57,11 @@ _state = {
     "faces": faces.FACE_ENABLED, "faces_ready": False,
     "ocr_ready": False,
     "phase": "", "error": None,
+    # 임베딩 backfill 진행 (별도 스레드 — phase와 독립)
+    "embed_pending": 0, "embed_done": 0, "embed_paused": False,
 }
 _index_lock = threading.Lock()
+_embed_lock = threading.Lock()
 
 
 def ai_available():
@@ -373,27 +381,102 @@ def _index_file(p: Path, existing):
     return item_id
 
 
-def _embed_missing():
-    """임베딩이 없거나 다른 모델로 만든 미디어를 배치로 인코딩 (AI 활성 시)."""
-    from . import embedder
-    model = embedder.model_id()
-    ids = db.missing_embedding_ids(model)
-    if not ids:
+def _available_ram_mb():
+    """여유 RAM(MB). psutil → /proc/meminfo → 알 수 없으면 None."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available // (1024 * 1024)
+    except ImportError:
+        pass
+    try:
+        with open("/proc/meminfo") as f:  # Linux/Android(proot)
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
+
+
+def _embed_batch_size(ram_mb):
+    """여유 RAM에 따른 배치 크기. 0이면 일시정지."""
+    forced = os.environ.get("EMBED_BATCH")
+    if forced:
+        return int(forced)
+    if ram_mb is None:          # 측정 불가(psutil 없는 macOS 등) → 보수적 기본
+        return 8
+    if ram_mb > 2048:
+        return 16
+    if ram_mb > 1024:
+        return 8
+    if ram_mb > 512:
+        return 4
+    return 0
+
+
+def start_embed_backfill():
+    """임베딩 backfill 스레드 시작 (이미 실행 중이면 무시)."""
+    if not ai_available():
         return
-    for i in range(0, len(ids), 16):
-        batch = ids[i : i + 16]
-        images, valid = [], []
-        for mid in batch:
-            tp = THUMBS_DIR / f"{mid}.jpg"
-            if tp.exists():
-                images.append(Image.open(tp))
-                valid.append(mid)
-        if not images:
-            continue
-        vecs = embedder.encode_images(images, batch_size=8)
-        for mid, v in zip(valid, vecs):
-            db.set_embedding(mid, v, model)
-        _state["done"] = min(_state["done"] + len(valid), _state["total"])
+    if not _embed_lock.acquire(blocking=False):
+        return  # 이미 실행 중
+    threading.Thread(target=_embed_backfill, daemon=True).start()
+
+
+def _embed_backfill():
+    """임베딩이 없거나 다른 모델로 만든 미디어를 메모리 인식 스로틀로 채운다.
+
+    - 여유 RAM에 따라 배치 크기 조절, 부족(<512MB)하면 일시정지 후 재확인
+    - 저RAM 기기는 듀티 사이클(EMBED_DUTY, 기본 0.5)로 CPU를 양보해 반응성 유지
+    - 진행상황은 DB에 즉시 반영되므로 재시작해도 이어서 진행된다
+    """
+    try:
+        from . import embedder
+        model = embedder.model_id()
+        done, skipped = 0, set()
+        while True:
+            ids = [m for m in db.missing_embedding_ids(model) if m not in skipped]
+            if not ids:
+                break
+            _state["embed_pending"] = len(ids)
+
+            ram = _available_ram_mb()
+            bs = _embed_batch_size(ram)
+            if bs == 0:
+                _state["embed_paused"] = True
+                time.sleep(30)
+                continue
+            _state["embed_paused"] = False
+
+            t0 = time.time()
+            images, valid = [], []
+            for mid in ids[:bs]:
+                tp = THUMBS_DIR / f"{mid}.jpg"
+                if tp.exists():
+                    images.append(Image.open(tp))
+                    valid.append(mid)
+                else:
+                    skipped.add(mid)  # 썸네일 없음 — 무한루프 방지
+            if valid:
+                vecs = embedder.encode_images(images, batch_size=bs)
+                for mid, v in zip(valid, vecs):
+                    db.set_embedding(mid, v, model)
+                done += len(valid)
+                _state["embed_done"] = done
+
+            # 저RAM 기기: 배치 시간에 비례해 쉬어 기기 반응성 유지
+            duty = float(os.environ.get(
+                "EMBED_DUTY", "1.0" if (ram or 4096) > 2048 else "0.5"))
+            if 0 < duty < 1.0:
+                time.sleep((time.time() - t0) * (1 - duty) / duty)
+
+        _state["embed_pending"] = len(skipped)
+        _state["ai_ready"] = True
+    except Exception as e:  # noqa: BLE001
+        _state["error"] = f"AI 색인: {e}"
+    finally:
+        _state["embed_paused"] = False
+        _embed_lock.release()
 
 
 def build_index(force=False):
@@ -449,12 +532,9 @@ def _run_pipeline(force):
         _state["ready"] = True
 
         if ai_available():
-            from . import embedder
-            _state["phase"] = "AI 색인"
-            _state["total"] = len(db.missing_embedding_ids(embedder.model_id()))
-            _state["done"] = 0
-            _embed_missing()
-            _state["ai_ready"] = True
+            # 임베딩은 별도 스레드에서 메모리 인식 스로틀로 천천히 —
+            # 얼굴/OCR 색인이 오래 걸리는 임베딩 뒤에 갇히지 않도록 한다.
+            start_embed_backfill()
 
         if faces.available():
             _state["phase"] = "얼굴 분석"

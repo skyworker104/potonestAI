@@ -7,3 +7,5 @@ opencv-python-headless>=4.8
 anthropic>=0.34
 python-multipart>=0.0.6
 pillow-heif>=0.16
+# 임베딩 backfill의 메모리 인식 스로틀용 (없으면 /proc/meminfo 폴백)
+psutil>=5.9

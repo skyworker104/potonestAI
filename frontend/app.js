@@ -45,10 +45,15 @@ async function pollStatus() {
         ? ` · 🧠 ${s.llm_name || "로컬 LLM"}`
         : s.engine === "openrouter" ? ` · 🌐 ${s.llm_model || "OpenRouter"}`
         : s.engine === "claude" ? " · ☁️ Claude" : "";
+      // 임베딩 backfill 진행 (메모리 인식 스로틀 — 천천히 채워짐)
+      const embedTotal = (s.embed_done || 0) + (s.embed_pending || 0);
+      const embedLabel = s.ai && !s.ai_ready && embedTotal > 0
+        ? ` · 🧠 AI 색인 ${s.embed_done || 0}/${embedTotal}${s.embed_paused ? " ⏸메모리 대기" : ""}`
+        : "";
       el.textContent =
         `${s.count}개 미디어` +
         (s.ai ? (s.ai_ready ? " · AI 검색 켜짐" : "") : " · AI 검색 꺼짐") +
-        engineLabel;
+        embedLabel + engineLabel;
       if (!state._loaded) {
         state._loaded = true;
         switchView("photos");

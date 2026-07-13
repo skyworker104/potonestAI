@@ -167,40 +167,111 @@ function updateSelectionBar() {
 $("#sel-cancel").onclick = clearSelection;
 
 $("#sel-fav").onclick = async () => {
-  for (const id of state.selection) await api.post(`/api/media/${id}/favorite`, { value: true });
-  speak(`${state.selection.size}장을 즐겨찾기에 추가했어요.`);
-  refreshView();
+  const ids = [...state.selection];
+  for (const id of ids) await api.post(`/api/media/${id}/favorite`, { value: true });
+  // 재렌더 없이 배지만 갱신 — 스크롤 위치 유지
+  const idSet = new Set(ids);
+  $$("#content .tile").forEach((t) => {
+    if (idSet.has(t.dataset.id) && !t.querySelector(".fav-badge")) {
+      const b = document.createElement("span");
+      b.className = "fav-badge";
+      b.textContent = "⭐";
+      t.appendChild(b);
+    }
+  });
+  [...Object.values(state.monthItems).flat(), ...state.currentItems]
+    .forEach((it) => { if (idSet.has(it.id)) it.favorite = 1; });
+  speak(`${ids.length}장을 즐겨찾기에 추가했어요.`);
+  clearSelection();
 };
 
 $("#sel-trash").onclick = async () => {
-  for (const id of state.selection) await api.post(`/api/media/${id}/trash`);
-  speak(`${state.selection.size}장을 휴지통으로 옮겼어요.`);
-  refreshView();
+  const ids = [...state.selection];
+  for (const id of ids) await api.post(`/api/media/${id}/trash`);
+  speak(`${ids.length}장을 휴지통으로 옮겼어요.`);
+  removeMediaFromView(ids);
 };
 
 $("#sel-album").onclick = () => openAlbumModal([...state.selection]);
 
 $("#sel-album-remove").onclick = async () => {
   if (!state.currentAlbum) return;
+  const ids = [...state.selection];
   await api.post(`/api/albums/${state.currentAlbum.id}/items/remove`, {
-    media_ids: [...state.selection],
+    media_ids: ids,
   });
   speak("앨범에서 제거했어요.");
-  refreshView();
+  removeMediaFromView(ids);
 };
 
 $("#sel-restore").onclick = async () => {
-  for (const id of state.selection) await api.post(`/api/media/${id}/restore`);
+  const ids = [...state.selection];
+  for (const id of ids) await api.post(`/api/media/${id}/restore`);
   speak("복원했어요.");
-  refreshView();
+  removeMediaFromView(ids);
 };
 
 $("#sel-delete").onclick = async () => {
   if (!confirm(`${state.selection.size}개 항목을 영구 삭제할까요? 되돌릴 수 없습니다.`)) return;
-  for (const id of state.selection) await api.del(`/api/media/${id}`);
+  const ids = [...state.selection];
+  for (const id of ids) await api.del(`/api/media/${id}`);
   speak("영구 삭제했어요.");
-  refreshView();
+  removeMediaFromView(ids);
 };
+
+/* 선택 항목을 재렌더 없이 화면에서만 제거 — 스크롤 위치가 유지된다.
+   (기존에는 switchView로 전체를 다시 그려 스크롤이 맨 위로 튀었음) */
+function removeMediaFromView(ids) {
+  const idSet = new Set(ids);
+  $$("#content .tile").forEach((t) => { if (idSet.has(t.dataset.id)) t.remove(); });
+
+  if (state.view === "photos") {
+    let removed = 0;
+    for (const m of state.months) {
+      const items = state.monthItems[m.ym];
+      if (!items) continue; // 미로딩 월은 선택될 수 없어 영향 없음
+      const kept = items.filter((it) => !idSet.has(it.id));
+      const n = items.length - kept.length;
+      if (!n) continue;
+      removed += n;
+      state.monthItems[m.ym] = kept;
+      m.count -= n;
+      const sec = document.querySelector(`.date-group[data-ym="${m.ym}"]`);
+      if (sec) {
+        if (m.count <= 0) sec.remove(); // 달이 비면 헤더째 제거
+        else {
+          const small = sec.querySelector("h4 small");
+          if (small) small.textContent = `${m.count}장`;
+        }
+      }
+    }
+    state.months = state.months.filter((m) => m.count > 0);
+    if (!state.months.length) { clearSelection(); return refreshView(); }
+    rebuildCurrentItems(); // 라이트박스 인덱스 재바인딩
+    adjustViewCount(-removed);
+  } else {
+    state.currentItems = state.currentItems.filter((it) => !idSet.has(it.id));
+    if (!state.currentItems.length) { clearSelection(); return refreshView(); }
+    // 제거로 밀린 라이트박스 인덱스 재바인딩
+    $$("#content .tile").forEach((t) => {
+      const idx = state.currentItems.findIndex((it) => it.id === t.dataset.id);
+      t.onclick = () => {
+        if (state.selection.size > 0) toggleSelect(t.dataset.id, t);
+        else openLightbox(idx);
+      };
+    });
+    adjustViewCount(-ids.length);
+  }
+  clearSelection();
+}
+
+/* 상단 개수 표시("N장" 등)의 숫자만 증감 */
+function adjustViewCount(delta) {
+  const el = $("#view-count");
+  const m = (el.textContent || "").match(/\d+/);
+  if (!m) return;
+  el.textContent = el.textContent.replace(/\d+/, Math.max(0, parseInt(m[0], 10) + delta));
+}
 
 function refreshView() {
   const v = state.view;

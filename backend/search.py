@@ -169,10 +169,52 @@ def _ocr_matches(search_text, allowed_ids, by_id, top_k):
     return out[:top_k]
 
 
+def _lev1(a, b):
+    """편집거리 ≤1 여부 — 음성인식 변형("씨메르"↔"시메르")·오타 허용용."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:  # 치환 1
+        return sum(1 for x, y in zip(a, b) if x != y) == 1
+    if la > lb:   # a를 짧은 쪽으로
+        a, b, la, lb = b, a, lb, la
+    i = j = diff = 0  # 삽입/삭제 1
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+        else:
+            diff += 1
+            if diff > 1:
+                return False
+            j += 1
+    return True
+
+
+_TOKEN_SPLIT = re.compile(r"[^0-9a-zA-Z가-힣]+")
+
+
 def _word_frac(words, text):
-    """질의 단어 중 text에 포함된 비율 (0~1)."""
+    """질의 단어가 text에 있는 비율 (0~1).
+
+    정확 포함 = 1.0, 3글자 이상 단어는 토큰 편집거리 1까지 0.8로 인정
+    (음성인식이 "시메르"를 "씨메르"로 적는 등 한 글자 변형이 흔함).
+    """
     low = text.lower()
-    return sum(1 for w in words if w in low) / len(words)
+    tokens = None
+    total = 0.0
+    for w in words:
+        if w in low:
+            total += 1.0
+            continue
+        if len(w) >= 3:
+            if tokens is None:
+                tokens = [t for t in _TOKEN_SPLIT.split(low) if t]
+            if any(_lev1(w, t) for t in tokens):
+                total += 0.8
+    return total / len(words)
 
 
 def _named_matches(search_text, allowed_ids, by_id):
@@ -238,7 +280,16 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
 
     # 0) 이름 연관검색 — 앨범명·코멘트·캡션·폴더명 단어 일치 (AI 불필요).
     #    고유명사("씨메르")는 이미지 모델이 알 수 없어 이 경로가 유일하다.
+    #    스킬 오탐/LLM 재해석이 고유명사를 지워버릴 수 있어(실사례: "씨메르"가
+    #    무관한 스킬 '대부도'에 가로채임) 원 발화(raw_query)로도 함께 검사한다.
     named_hits = _named_matches(subject, allowed_ids, by_id)
+    if raw_query:
+        rq = skills._core(raw_query)
+        if rq and rq != subject:
+            for mid, (f, w) in _named_matches(rq, allowed_ids, by_id).items():
+                cur = named_hits.get(mid)
+                if cur is None or f * w > cur[0] * cur[1]:
+                    named_hits[mid] = (f, w)
     # 앨범명 등 명시적 이름 매치는 관련도 컷(top_k=60)의 예외 —
     # "씨메르 사진"이면 그 앨범 전체가 나와야 한다.
     if named_hits:

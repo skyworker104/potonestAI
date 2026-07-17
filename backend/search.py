@@ -217,15 +217,31 @@ def _word_frac(words, text):
     return total / len(words)
 
 
+# 이름 매칭용 조사 제거("하갓냐에서"→"하갓냐") 및 서술어 불용어
+_JOSA = re.compile(r"(에서의|에서|에게|한테|처럼|보다|으로|의|에|은|는|이|가|을|를|와|과|도|만|로)$")
+_NAME_STOP = {"찍은", "찍었던", "나온", "있는", "갔던", "갔다온", "다녀온",
+              "우리", "그때", "사진", "영상", "동영상", "비디오"}
+
+
+def _name_words(text):
+    out = []
+    for w in re.split(r"\s+", (text or "").strip()):
+        w = w.lower()
+        if len(w) > 2:
+            w = _JOSA.sub("", w)
+        if len(w) >= 2 and w not in _NAME_STOP:
+            out.append(w)
+    return out
+
+
 def _named_matches(search_text, allowed_ids, by_id):
-    """앨범명·코멘트·캡션·경로(폴더/파일명) 단어 일치 — 고유명사 연관검색.
+    """앨범명·코멘트·캡션·지명·경로(폴더/파일명) 단어 일치 — 고유명사 연관검색.
 
     "씨메르 사진"처럼 이미지 모델이 알 수 없는 고유명사는 사용자가 붙인
-    이름(앨범·코멘트)과 폴더명에서 찾아야 한다. AI 없이도 동작한다.
+    이름(앨범·코멘트)과 지명·폴더명에서 찾아야 한다. AI 없이도 동작한다.
     반환: {media_id: (일치비율 0~1, 가중치)} — 앨범명은 명시적 분류라 가중 1.5.
     """
-    words = [w.lower() for w in re.split(r"\s+", (search_text or "").strip())
-             if len(w) >= 2]
+    words = _name_words(search_text)
     if not words:
         return {}
     hits = {}  # id → (frac, weight)
@@ -244,6 +260,8 @@ def _named_matches(search_text, allowed_ids, by_id):
     for mid, it in by_id.items():
         if it.get("comment"):
             _add(mid, _word_frac(words, it["comment"]), 1.0)
+        if it.get("place_name"):  # 역지오코딩된 지명 ("협재리" 등)
+            _add(mid, _word_frac(words, it["place_name"]), 1.0)
         _add(mid, _word_frac(words, it["path"]), 1.0)
     return hits
 

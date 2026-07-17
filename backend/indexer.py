@@ -541,6 +541,21 @@ def _run_pipeline(force):
         db.remove_missing(present)
         _state["ready"] = True
 
+        # GPS → 지명 매핑 (역지오코딩) — "협재 사진" 같은 지명 검색용.
+        # 최초 1회 GeoNames 다운로드(~12MB), 이후 순수 계산이라 빠름.
+        try:
+            from . import geoname
+            pending = db.media_missing_place()
+            if pending and geoname.available():
+                _state["phase"] = "지명 매핑"
+                _state["total"] = len(pending)
+                _state["done"] = 0
+                for mid, lat, lon in pending:
+                    db.set_place_name(mid, geoname.lookup(lat, lon))
+                    _state["done"] += 1
+        except Exception:
+            pass
+
         if ai_available():
             # 임베딩은 별도 스레드에서 메모리 인식 스로틀로 천천히 —
             # 얼굴/OCR 색인이 오래 걸리는 임베딩 뒤에 갇히지 않도록 한다.

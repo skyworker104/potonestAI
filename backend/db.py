@@ -85,6 +85,8 @@ MIGRATIONS = [
     # 임베딩을 만든 모델 태그 — 백엔드(SigLIP2/CLIP-ONNX)가 달라지면 벡터가
     # 비호환이므로, 검색은 같은 모델끼리만 비교하고 불일치분은 재색인한다.
     "ALTER TABLE media ADD COLUMN embed_model TEXT",
+    # 역지오코딩된 지명(geoname.py) — ''는 조회했으나 근처 지명 없음(재조회 방지)
+    "ALTER TABLE media ADD COLUMN place_name TEXT",
     # 태그 도입 전의 임베딩은 전부 SigLIP2였음 — 소급 태깅 (멱등)
     "UPDATE media SET embed_model='google/siglip2-base-patch16-256' "
     "WHERE embedding IS NOT NULL AND embed_model IS NULL",
@@ -117,7 +119,7 @@ def init():
 
 MEDIA_COLS = (
     "id, path, type, taken_at, lat, lon, width, height, duration, favorite, "
-    "trashed_at, comment"
+    "trashed_at, comment, place_name"
 )
 
 
@@ -277,9 +279,13 @@ def set_favorite(media_id, value):
 
 
 def set_location(media_id, lat, lon):
-    """사용자가 지도에서 수동 지정한 위치 저장 (lat/lon=None이면 위치 삭제)."""
+    """사용자가 지도에서 수동 지정한 위치 저장 (lat/lon=None이면 위치 삭제).
+
+    place_name도 초기화해 다음 색인에서 새 좌표로 지명을 다시 매핑한다.
+    """
     with conn() as c:
-        c.execute("UPDATE media SET lat=?, lon=? WHERE id=?", (lat, lon, media_id))
+        c.execute("UPDATE media SET lat=?, lon=?, place_name=NULL WHERE id=?",
+                  (lat, lon, media_id))
 
 
 def set_trashed(media_id, trash_path):
@@ -530,6 +536,23 @@ def caption_texts():
             "WHERE trashed_at IS NULL AND caption IS NOT NULL AND caption != ''"
         ).fetchall()
     return [(r["id"], r["caption"]) for r in rows]
+
+
+def media_missing_place():
+    """GPS는 있는데 지명 매핑이 안 된 활성 미디어 (id, lat, lon) 목록."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT id, lat, lon FROM media WHERE trashed_at IS NULL "
+            "AND lat IS NOT NULL AND lon IS NOT NULL AND place_name IS NULL"
+        ).fetchall()
+    return [(r["id"], r["lat"], r["lon"]) for r in rows]
+
+
+def set_place_name(media_id, name):
+    """역지오코딩 결과 저장. 지명 없음도 ''로 기록해 재조회를 막는다."""
+    with conn() as c:
+        c.execute("UPDATE media SET place_name=? WHERE id=?",
+                  (name or "", media_id))
 
 
 def album_name_media():

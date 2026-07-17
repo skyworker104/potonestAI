@@ -87,7 +87,9 @@ function updateLocBar(it) {
   const hasGps = it.lat != null && it.lon != null;
   let html = "";
   if (hasGps) {
-    html = `📍 위도 ${it.lat.toFixed(5)}, 경도 ${it.lon.toFixed(5)} ` +
+    // 역지오코딩된 지명이 있으면 좌표 대신 사람이 읽는 이름을 우선 표시
+    const place = (it.place_name || "").split(" ").filter(t => /[가-힣]/.test(t)).slice(0, 2).join(" ");
+    html = `📍 ${place ? place + " · " : ""}위도 ${it.lat.toFixed(5)}, 경도 ${it.lon.toFixed(5)} ` +
            `· <a class="loc-link" id="loc-edit">위치 수정</a>`;
   } else if (lbEditMode) {
     html = lbPending

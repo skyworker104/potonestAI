@@ -235,13 +235,22 @@ export default function ChatScreen() {
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <View style={s.header}>
-        <Text style={s.logo}>📷 PhotoNest 업로더</Text>
-        <Text style={s.sub}>
-          {cfg?.serverUrl ? `연결됨 · ${cfg.autoBackup ? "자동백업 켜짐" : "수동"}` : "서버 미연결"}
-          {cfg?.albums?.length
-            ? ` · 폴더 ${cfg.albums.length}개`
-            : cfg?.serverUrl ? " · 전체 사진" : ""}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text style={s.logo}>📷 PhotoNest 업로더</Text>
+          <Text style={s.sub}>
+            {cfg?.serverUrl ? `연결됨 · ${cfg.autoBackup ? "자동백업 켜짐" : "수동"}` : "서버 미연결"}
+            {cfg?.albums?.length
+              ? ` · 폴더 ${cfg.albums.length}개`
+              : cfg?.serverUrl ? " · 전체 사진" : ""}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={s.gear}
+          onPress={openAlbumPicker}
+          accessibilityLabel="백업할 폴더 설정"
+        >
+          <Text style={{ fontSize: 20 }}>⚙️</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView ref={scrollRef} style={s.log} contentContainerStyle={{ padding: 14 }}>
@@ -282,7 +291,14 @@ export default function ChatScreen() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  header: { padding: 16, paddingTop: 54, borderBottomColor: "#262b3a", borderBottomWidth: 1 },
+  header: {
+    padding: 16, paddingTop: 54, borderBottomColor: "#262b3a", borderBottomWidth: 1,
+    flexDirection: "row", alignItems: "center", gap: 10,
+  },
+  gear: {
+    width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center",
+    backgroundColor: C.panel2, borderWidth: 1, borderColor: "#2c3245",
+  },
   logo: { color: C.text, fontSize: 19, fontWeight: "700" },
   sub: { color: C.muted, fontSize: 12, marginTop: 4 },
   log: { flex: 1 },

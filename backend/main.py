@@ -73,6 +73,10 @@ class OpenRouterTest(BaseModel):
     openrouter_model: Optional[str] = None
 
 
+class TakeoutAlbumApply(BaseModel):
+    names: Optional[List[str]] = None  # None이면 감지된 전체
+
+
 @app.on_event("startup")
 def startup():
     db.init()
@@ -180,6 +184,20 @@ def takeout_pending():
             "added": rec.get("added"),
         })
     return {"zips": items}
+
+
+@app.get("/api/takeout/albums")
+def takeout_albums():
+    """구글포토 앨범 폴더 감지 결과 — 앨범으로 가져올지 사용자에게 묻는 용도."""
+    from . import takeout
+    detected, _ = takeout.detect_albums()
+    return {"albums": detected}
+
+
+@app.post("/api/takeout/albums/apply")
+def takeout_albums_apply(body: TakeoutAlbumApply):
+    from . import takeout
+    return takeout.apply_albums(body.names)
 
 
 @app.post("/api/reindex")

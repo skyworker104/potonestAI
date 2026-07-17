@@ -7,6 +7,7 @@
 AI가 꺼져 있으면(저사양 기기) 파일명·날짜 기반 검색으로 동작한다.
 """
 import re
+import unicodedata
 from datetime import datetime
 
 import numpy as np
@@ -201,8 +202,9 @@ def _word_frac(words, text):
 
     정확 포함 = 1.0, 3글자 이상 단어는 토큰 편집거리 1까지 0.8로 인정
     (음성인식이 "시메르"를 "씨메르"로 적는 등 한 글자 변형이 흔함).
+    macOS 경로는 한글이 NFD(자모 분해)라 NFC로 정규화해 비교한다.
     """
-    low = text.lower()
+    low = unicodedata.normalize("NFC", text).lower()
     tokens = None
     total = 0.0
     for w in words:

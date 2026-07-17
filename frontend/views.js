@@ -410,6 +410,7 @@ views.phone = async () => {
             (처리된 zip은 <code>photos/_zips_done/</code>으로 옮겨집니다)</li>
       </ol>
       <div id="takeout-status" class="small"></div>
+      <div id="takeout-albums"></div>
     </section>
   </div>`;
   new QRCode(document.getElementById("qr-box"), {
@@ -452,7 +453,50 @@ views.phone = async () => {
         : `✅ photos 폴더의 Takeout zip ${zips.length}개가 모두 처리되었습니다.`;
     }
   } catch (_) { /* 무시 */ }
+  renderTakeoutAlbums();
 };
+
+/* 구글포토 앨범 폴더 감지 → 사용자에게 묻고 앨범 생성 */
+async function renderTakeoutAlbums() {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const box = document.getElementById("takeout-albums");
+  if (!box) return;
+  try {
+    const { albums } = await api.get("/api/takeout/albums");
+    if (!albums.length) return;
+    const newN = albums.filter((a) => !a.album_exists).length;
+    const rows = albums.map((a) =>
+      `<label class="ta-row"><input type="checkbox" data-name="${encodeURIComponent(a.name)}"${a.album_exists ? "" : " checked"}>
+       <span>${esc(a.name)}</span>
+       <small>${a.count}장${a.album_exists ? " · 이미 있음(사진만 보충)" : ""}</small></label>`
+    ).join("");
+    box.innerHTML =
+      `<div class="ta-box">
+        <strong>📁 구글포토 앨범 폴더 ${albums.length}개 발견${newN ? ` (새 앨범 ${newN}개)` : ""}</strong>
+        <p class="small">테이크아웃의 폴더 구조가 앨범으로 묶여 있어요. 선택한 폴더를
+        PhotoNest 앨범으로 만들까요? (연도별 자동 폴더는 제외됨)</p>
+        <div class="ta-list">${rows}</div>
+        <div class="ta-actions">
+          <button id="ta-apply">✅ 선택한 앨범 만들기</button>
+          <span id="ta-status" class="small"></span>
+        </div>
+      </div>`;
+    document.getElementById("ta-apply").onclick = async () => {
+      const names = [...box.querySelectorAll("input:checked")]
+        .map((x) => decodeURIComponent(x.dataset.name));
+      if (!names.length) {
+        document.getElementById("ta-status").textContent = "선택된 앨범이 없습니다.";
+        return;
+      }
+      document.getElementById("ta-status").textContent = "생성 중…";
+      const r = await api.post("/api/takeout/albums/apply", { names });
+      document.getElementById("ta-status").textContent =
+        `✅ 새 앨범 ${r.created}개 · 기존 앨범 보충 ${r.updated}개 · 사진 ${r.added}장 추가됨`;
+      speak(`앨범 ${r.created + r.updated}개를 정리했어요.`);
+      renderTakeoutAlbums(); // '이미 있음' 상태 갱신
+    };
+  } catch (_) { /* 무시 */ }
+}
 
 async function cleanAllDuplicates() {
   const { groups } = await api.get("/api/duplicates");

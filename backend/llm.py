@@ -14,7 +14,8 @@ SYSTEM_PROMPT = """\
 JSON 스키마:
 {
   "intent": "search" | "chat",
-  "search_text": "사진 내용의 핵심 주제어, 원본 언어(한국어) 그대로. search가 아니면 null",
+  "search_text": "사진에 '보이는 내용'(사물·동물·풍경·상황)만. search가 아니면 null",
+  "place_text": "촬영 '장소·지명'(도시·동네·나라·명소·건물이름). 없으면 null",
   "date_from": "ISO8601 또는 null",
   "date_to": "ISO8601 또는 null",
   "media_type": "image" | "video" | null,
@@ -23,10 +24,14 @@ JSON 스키마:
 
 규칙:
 - 사진/영상을 찾아달라는 요청이면 intent=search.
+- **내용과 장소를 반드시 구분하라**: "고양시에서 찍은" → place_text="고양시"(지명),
+  "고양이 사진" → search_text="고양이"(동물). "제주도 바닷가" →
+  place_text="제주도", search_text="바닷가". 지명을 search_text에 넣으면
+  이미지 검색이 엉뚱한 결과(발음 비슷한 사물)를 낸다.
 - '작년 여름', '지난달', '3년 전' 같은 상대 날짜는 반드시 오늘 날짜 기준으로 환산해 date_from/date_to를 채울 것.
   예) 오늘이 2026년이면 '3년 전' → date_from=2023-01-01, date_to=2023-12-31T23:59:59.
   '재작년'=2년 전, '작년'=1년 전. 날짜 조건이 있으면 절대 비우지 말 것.
-- search_text에는 날짜 표현을 넣지 말고 사물/장소/상황만 원본 언어(한국어) 그대로.
+- search_text에는 날짜·지명을 넣지 말고 보이는 내용만 원본 언어(한국어) 그대로.
   이미지 검색 엔진(SigLIP2)이 다국어 네이티브라 번역이 필요 없다.
 - 인사말이나 잡담이면 intent=chat, 짧고 친근하게 reply.
 - reply에서 검색 결과 개수는 모르므로 언급하지 말 것 (예: "바닷가 사진을 찾아볼게요").
@@ -304,6 +309,7 @@ def _normalize(result):
     return {
         "intent": result.get("intent") or "search",
         "search_text": result.get("search_text") or None,
+        "place_text": result.get("place_text") or None,
         "date_from": _clean_date(result.get("date_from")),
         "date_to": _clean_date(result.get("date_to")),
         "media_type": result.get("media_type") or None,
@@ -395,5 +401,6 @@ def parse(message: str, history=None):
     # 휴리스틱 폴백
     result = _fallback_parse(message)
     result.setdefault("person", None)
+    result.setdefault("place_text", None)
     result["engine"] = "heuristic"
     return result

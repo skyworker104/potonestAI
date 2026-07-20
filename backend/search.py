@@ -331,7 +331,7 @@ def _named_matches(search_text, allowed_ids, by_id):
 
 def find(search_text, date_from=None, date_to=None, media_type=None,
          raw_query=None, only_ids=None, bbox=None, exclude_ids=None,
-         hour_from=None, hour_to=None, top_k=MAX_RESULTS):
+         hour_from=None, hour_to=None, place_text=None, top_k=MAX_RESULTS):
     from . import places
     pool = db.list_photos(ids=only_ids, limit=100000) if only_ids is not None \
         else db.list_photos(limit=100000)
@@ -348,8 +348,20 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     if not candidates:
         return []
 
+    # 지명 텍스트 필터 — LLM이 의미 분석으로 분리한 촬영 장소("고양시").
+    # 의미(이미지) 검색에 넣지 않고 지명·경로·앨범·코멘트 메타데이터로만
+    # 후보를 제한한다 ("고양시"가 임베딩상 "고양이"와 가까워 생기는 오탐 차단).
+    if place_text:
+        sub = {it["id"]: it for it in candidates}
+        ph = _named_matches(place_text, set(sub), sub)
+        candidates = [it for it in candidates if it["id"] in ph]
+        if not candidates:
+            return []
+
     if not search_text:
-        # 검색어 없이 위치/인물/날짜만 → 최신순
+        # 검색어 없이 위치/지명/인물/날짜만 → 그 그룹 전체를 최신순으로
+        if place_text:
+            top_k = max(top_k, len(candidates))
         return [dict(it, score=None) for it in candidates[:top_k]]
 
     by_id = {it["id"]: it for it in candidates}

@@ -317,18 +317,19 @@ _last_search = {}
 
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
-                hour_from=None, hour_to=None):
+                hour_from=None, hour_to=None, place_text=None):
     only_ids = db.person_media_ids(person["id"]) if person else None
     # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체
     top_k = 60 if search_text else 1000
     results = search.find(
         search_text, date_from=date_from, date_to=date_to, media_type=media_type,
         raw_query=message, only_ids=only_ids, bbox=bbox, exclude_ids=exclude_ids,
-        hour_from=hour_from, hour_to=hour_to,
+        hour_from=hour_from, hour_to=hour_to, place_text=place_text,
         top_k=top_k,
     )
     n = len(results)
-    loc = f"{place['name']} 지역(위치 기준)에서 " if place else ""
+    loc = f"{place['name']} 지역(위치 기준)에서 " if place \
+        else (f"'{place_text}'에서 " if place_text else "")
     if n == 0:
         reply = "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
     elif person and not search_text and not place:
@@ -340,7 +341,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         query=message, place=place, bbox=bbox, search_text=search_text,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, hour_from=hour_from, hour_to=hour_to,
-        result_ids=[r["id"] for r in results],
+        place_text=place_text, result_ids=[r["id"] for r in results],
     )
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
@@ -375,6 +376,7 @@ def chat(req: ChatRequest):
     core_has_content = bool(skills._strip_terms(core)) if place else True
 
     search_text = None
+    place_text = None
     engine = "location" if place else None
     skill_used = None
 
@@ -395,6 +397,7 @@ def chat(req: ChatRequest):
                 return {"reply": parsed.get("reply") or "무엇을 도와드릴까요?",
                         "intent": "chat", "engine": parsed.get("engine"), "results": []}
             search_text = parsed.get("search_text")
+            place_text = parsed.get("place_text")
             media_type = media_type or parsed.get("media_type")
             date_from = parsed.get("date_from") or date_from
             date_to = parsed.get("date_to") or date_to
@@ -406,11 +409,17 @@ def chat(req: ChatRequest):
                 if sk:
                     skill_used = sk["label"]
 
+    # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
+    if place_text and not place:
+        known = places.detect(place_text)
+        if known:
+            place, bbox, place_text = known, known["bbox"], None
+
     return _run_search(
         message, search_text=search_text, bbox=bbox, place=place,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
-        hour_from=hour_from, hour_to=hour_to,
+        hour_from=hour_from, hour_to=hour_to, place_text=place_text,
     )
 
 

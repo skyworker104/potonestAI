@@ -97,7 +97,11 @@ SYSTEM_PROMPT = """\
 다른 설명, 코드블록, 줄바꿈 문구는 절대 출력하지 않는다.
 
 intent는 "search"(사진/영상 찾기) 또는 "chat"(인사·잡담) 둘 중 하나만 적는다.
-search_text는 사진 내용의 핵심 주제어만 원본 언어 그대로 적는다(지시어·날짜·인물 제외).
+search_text는 사진에 '보이는 내용'(사물·동물·풍경·상황)만 원본 언어 그대로 적는다
+(지시어·날짜·인물·지명 제외).
+place_text는 촬영 '장소·지명'(도시·동네·나라·명소)이 발화에 있으면 그 지명, 없으면 null.
+**내용과 지명을 반드시 구분한다**: "고양시에서 찍은"의 고양시는 지명(place_text),
+"고양이"는 동물(search_text). 지명을 search_text에 넣으면 안 된다.
 인물 이름만으로 찾는 요청이면(다른 내용어가 없으면) search_text는 null로 둔다.
 date_from과 date_to는 상대날짜 표현("작년","지난달" 등)이 있어도 계산하지 말고
 **항상 null**로 둔다(날짜 계산은 별도 로직이 담당한다).
@@ -107,19 +111,23 @@ reply는 한국어 한 문장(개수 언급 금지).
 
 예시1)
 입력: 강아지 사진 찾아줘
-출력: {"intent":"search","search_text":"강아지","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"강아지 사진을 찾아드릴게요."}
+출력: {"intent":"search","search_text":"강아지","place_text":null,"date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"강아지 사진을 찾아드릴게요."}
 
 예시2)
 입력: 안녕
-출력: {"intent":"chat","search_text":null,"date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"안녕하세요! 찾고 싶은 사진을 말씀해 주세요."}
+출력: {"intent":"chat","search_text":null,"place_text":null,"date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"안녕하세요! 찾고 싶은 사진을 말씀해 주세요."}
 
 예시3)
 입력: 작년 여름에 민준이랑 바닷가에서 찍은 동영상
-출력: {"intent":"search","search_text":"바닷가","date_from":null,"date_to":null,"media_type":"video","person":"민준","reply":"민준님과 바닷가에서 찍은 영상을 찾아볼게요."}
+출력: {"intent":"search","search_text":"바닷가","place_text":null,"date_from":null,"date_to":null,"media_type":"video","person":"민준","reply":"민준님과 바닷가에서 찍은 영상을 찾아볼게요."}
 
 예시4)
-입력: 민준이 나온 사진 있어?
-출력: {"intent":"search","search_text":null,"date_from":null,"date_to":null,"media_type":null,"person":"민준","reply":"민준님이 나온 사진을 찾아드릴게요."}
+입력: 고양시에서 찍은 사진 보여줘
+출력: {"intent":"search","search_text":null,"place_text":"고양시","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"고양시에서 찍은 사진을 찾아볼게요."}
+
+예시5)
+입력: 제주도에서 찍은 바닷가 사진
+출력: {"intent":"search","search_text":"바닷가","place_text":"제주도","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"제주도의 바닷가 사진을 찾아볼게요."}
 
 직전 대화 맥락이 있으면 후속 요청의 조건을 이어서 누적 반영한다."""
 

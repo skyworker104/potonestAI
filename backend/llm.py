@@ -59,6 +59,32 @@ def _year_range(year):
     return f"{year}-01-01", f"{year}-12-31T23:59:59"
 
 
+def _month_range(year, month):
+    import calendar
+    last = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last}T23:59:59"
+
+
+# 시간대 표현 → (시작시, 끝시). 밤은 자정을 넘겨 wrap(20→05).
+_TIME_WORDS = {
+    "새벽": (4, 8), "아침": (6, 11), "오전": (6, 12), "점심": (11, 14),
+    "오후": (12, 18), "저녁": (17, 21), "밤": (20, 5), "심야": (23, 4),
+}
+
+
+def _parse_time_phrase(msg):
+    """"아침에 찍은", "밤에" 같은 시간대 표현 → (hour_from, hour_to, 매칭문자열).
+
+    조사('에/무렵/쯤/녘')가 붙은 경우만 시간 필터로 해석한다 —
+    "저녁 사진"(음식), "밤 야경"(야경) 같은 내용어 용법과 구분하기 위함.
+    """
+    m = re.search(r"(새벽|아침|오전|점심|오후|저녁|밤|심야)\s*(에|무렵|쯤|녘)", msg)
+    if not m:
+        return None, None, None
+    hf, ht = _TIME_WORDS[m.group(1)]
+    return hf, ht, m.group(0)
+
+
 def _parse_date_phrase(msg):
     """발화에서 상대/절대 날짜 표현을 찾아 (date_from, date_to, 매칭문자열) 반환.
 
@@ -66,6 +92,28 @@ def _parse_date_phrase(msg):
     매칭문자열은 검색 키워드에서 제거하는 데 쓴다.
     """
     now = datetime.now()
+
+    # "2018년 4월" — 연+월 조합 (연도 단독 패턴보다 먼저 검사해야 함)
+    m = re.search(r"((?:19|20)\d{2})\s*년\s*(\d{1,2})\s*월", msg)
+    if m and 1 <= int(m.group(2)) <= 12:
+        df, dt = _month_range(int(m.group(1)), int(m.group(2)))
+        return df, dt, m.group(0)
+
+    # "작년 4월" / "재작년 4월" / "올해 4월"
+    m = re.search(r"(재작년|작년|올해|금년)\s*(\d{1,2})\s*월", msg)
+    if m and 1 <= int(m.group(2)) <= 12:
+        yr = now.year - (2 if m.group(1) == "재작년" else 1 if m.group(1) == "작년" else 0)
+        df, dt = _month_range(yr, int(m.group(2)))
+        return df, dt, m.group(0)
+
+    # "4월", "지난 4월" — 가장 최근에 지나간 그 달 (이번 달 포함)
+    #   숫자 앞이 숫자면(2018 등) 제외, "N개월 전"의 월과도 구분됨(개 글자가 사이에)
+    m = re.search(r"(?<![\d])(\d{1,2})\s*월(?!\s*전)", msg)
+    if m and 1 <= int(m.group(1)) <= 12:
+        mo = int(m.group(1))
+        yr = now.year if mo <= now.month else now.year - 1
+        df, dt = _month_range(yr, mo)
+        return df, dt, m.group(0)
 
     # 절대 연도: "2019년", "2019년도"
     m = re.search(r"(19|20)\d{2}\s*년도?", msg)
@@ -222,7 +270,7 @@ def detect_feedback(message):
 
 
 def quick_meta(message):
-    """LLM 없이 즉시 추출하는 메타 — 인사 여부, 날짜 범위, 미디어 종류.
+    """LLM 없이 즉시 추출하는 메타 — 인사, 날짜 범위, 시간대, 미디어 종류.
 
     스킬 재사용 경로에서 날짜·미디어를 매번 다시 계산하는 데 쓴다
     (상대 날짜 '3년 전' 등이 시간 지나도 안전하도록).
@@ -231,9 +279,11 @@ def quick_meta(message):
     is_greeting = any(g in msg for g in GREETINGS) and len(msg) <= 12
     media_type = "video" if any(w in msg for w in ("영상", "동영상", "비디오")) else None
     df, dt, span = _parse_date_phrase(msg)
+    hf, ht, tspan = _parse_time_phrase(msg)
     return {
         "greeting": is_greeting, "media_type": media_type,
         "date_from": df, "date_to": dt, "date_span": span,
+        "hour_from": hf, "hour_to": ht, "time_span": tspan,
     }
 
 

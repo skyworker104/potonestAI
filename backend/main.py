@@ -316,13 +316,15 @@ _last_search = {}
 
 
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
-                media_type, person, engine, skill_used=None, exclude_ids=None):
+                media_type, person, engine, skill_used=None, exclude_ids=None,
+                hour_from=None, hour_to=None):
     only_ids = db.person_media_ids(person["id"]) if person else None
     # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체
     top_k = 60 if search_text else 1000
     results = search.find(
         search_text, date_from=date_from, date_to=date_to, media_type=media_type,
         raw_query=message, only_ids=only_ids, bbox=bbox, exclude_ids=exclude_ids,
+        hour_from=hour_from, hour_to=hour_to,
         top_k=top_k,
     )
     n = len(results)
@@ -337,7 +339,8 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     _last_search.update(
         query=message, place=place, bbox=bbox, search_text=search_text,
         date_from=date_from, date_to=date_to, media_type=media_type,
-        person=person, result_ids=[r["id"] for r in results],
+        person=person, hour_from=hour_from, hour_to=hour_to,
+        result_ids=[r["id"] for r in results],
     )
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
@@ -362,6 +365,7 @@ def chat(req: ChatRequest):
                 "intent": "chat", "engine": "instant", "results": []}
 
     date_from, date_to, media_type = meta["date_from"], meta["date_to"], meta["media_type"]
+    hour_from, hour_to = meta["hour_from"], meta["hour_to"]
     person = db.match_person_name(message)
 
     # 지명 감지 → 위치(GPS) 검색. 지명 뺀 나머지(residual)로 내용 의도 분석
@@ -406,6 +410,7 @@ def chat(req: ChatRequest):
         message, search_text=search_text, bbox=bbox, place=place,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
+        hour_from=hour_from, hour_to=hour_to,
     )
 
 
@@ -423,7 +428,8 @@ def _handle_feedback(message, fb):
     result = _run_search(
         ls["query"], search_text=ls.get("search_text"), bbox=place["bbox"],
         place=place, date_from=ls.get("date_from"), date_to=ls.get("date_to"),
-        media_type=ls.get("media_type"), person=ls.get("person"), engine="location",
+        media_type=ls.get("media_type"), person=ls.get("person"),
+        hour_from=ls.get("hour_from"), hour_to=ls.get("hour_to"), engine="location",
     )
     # 피드백을 스킬로 학습 → 다음에 같은 류 질의는 위치로 처리
     skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"), place=place)

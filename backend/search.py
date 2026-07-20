@@ -87,6 +87,19 @@ def _in_date_range(item, date_from, date_to):
     return True
 
 
+def _in_hour_range(item, hour_from, hour_to):
+    """촬영 시각의 시(hour) 필터 — "아침에 찍은"(6~11시) 등. 밤(20~5)은 자정 wrap."""
+    if hour_from is None:
+        return True
+    try:
+        h = datetime.fromisoformat(item["taken_at"]).hour
+    except (ValueError, TypeError):
+        return False
+    if hour_from <= hour_to:
+        return hour_from <= h < hour_to
+    return h >= hour_from or h < hour_to
+
+
 def _metadata_find(search_text, candidates, top_k):
     """AI 비활성 시 폴백: 파일명/경로 키워드 매칭."""
     if not search_text:
@@ -269,7 +282,8 @@ def _named_matches(search_text, allowed_ids, by_id):
 
 
 def find(search_text, date_from=None, date_to=None, media_type=None,
-         raw_query=None, only_ids=None, bbox=None, exclude_ids=None, top_k=MAX_RESULTS):
+         raw_query=None, only_ids=None, bbox=None, exclude_ids=None,
+         hour_from=None, hour_to=None, top_k=MAX_RESULTS):
     from . import places
     pool = db.list_photos(ids=only_ids, limit=100000) if only_ids is not None \
         else db.list_photos(limit=100000)
@@ -277,6 +291,7 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     candidates = [
         it for it in pool
         if _in_date_range(it, date_from, date_to)
+        and _in_hour_range(it, hour_from, hour_to)
         and (media_type in (None, "", "all") or it["type"] == media_type)
         and it["id"] not in exclude
         # 지명(위치) 검색이면 GPS가 해당 지역 안인 사진만 (정확한 장소 판정)

@@ -57,6 +57,9 @@ echo "→ $DISTRO 안에 의존성 + PhotoNest 설치 중…"
 proot-distro login "$DISTRO" $BINDS -- bash -c '
   set -e
   export DEBIAN_FRONTEND=noninteractive
+  # 이전 설치가 중간에(SSH 끊김 등) 끊겼으면 dpkg가 불완전 상태 — 먼저 복구
+  dpkg --configure -a 2>/dev/null || true
+  apt-get install -f -y -qq 2>/dev/null || true
   apt-get update -qq
   echo "→ 시스템 바이너리 패키지 설치 (컴파일 회피)…"
   apt-get install -y -qq \

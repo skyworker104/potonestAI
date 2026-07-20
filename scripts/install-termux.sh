@@ -50,8 +50,14 @@ proot-distro login ubuntu $BINDS -- bash -c '
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     python3 python3-venv python3-pip libglib2.0-0 \
     tesseract-ocr tesseract-ocr-kor
+  echo "→ Python: $(python3 --version)"
   cd /opt/photonest
-  ./install.sh --lite
+  if ! ./install.sh --lite; then
+    # 일부 패키지가 휠 없이 소스 빌드에 들어간 경우 — 컴파일러 설치 후 1회 재시도
+    echo "⚠️  일부 패키지 빌드 실패 — 빌드 도구 설치 후 재시도합니다 (수 분)"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential python3-dev
+    ./install.sh --lite
+  fi
 '
 
 # ---- Termux 쪽 실행 스크립트 생성 ----

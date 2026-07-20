@@ -44,20 +44,60 @@ done
 [ -n "$SD" ] && BINDS="$BINDS --bind $SD:/media/sdcard"
 
 echo "→ Ubuntu 안에 의존성 + PhotoNest(경량 AI) 설치 중…"
+# 핵심 전략: numpy·opencv·pillow·psutil은 pip로 받으면 소스 컴파일(CMake)에 들어가
+# 저사양 ARM에서 실패한다 → apt의 미리 빌드된 바이너리를 쓰고, venv는
+# --system-site-packages로 만들어 그것들을 그대로 재사용한다. pip는 순수 파이썬과
+# 안정적 aarch64 휠(onnxruntime 등)만 설치한다.
 proot-distro login ubuntu $BINDS -- bash -c '
   set -e
   apt-get update -qq
+  echo "→ 시스템 바이너리 패키지 설치 (컴파일 회피)…"
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    python3 python3-venv python3-pip libglib2.0-0 \
-    tesseract-ocr tesseract-ocr-kor
+    python3-full python3-venv python3-pip \
+    python3-numpy python3-opencv python3-pil python3-psutil \
+    libglib2.0-0 libgl1 tesseract-ocr tesseract-ocr-kor
   echo "→ Python: $(python3 --version)"
+
   cd /opt/photonest
-  if ! ./install.sh --lite; then
-    # 일부 패키지가 휠 없이 소스 빌드에 들어간 경우 — 컴파일러 설치 후 1회 재시도
-    echo "⚠️  일부 패키지 빌드 실패 — 빌드 도구 설치 후 재시도합니다 (수 분)"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential python3-dev
-    ./install.sh --lite
+  [ -d .venv ] || python3 -m venv --system-site-packages .venv
+  .venv/bin/pip install --upgrade pip -q
+
+  echo "→ 순수 파이썬 의존성 설치…"
+  .venv/bin/pip install -q -r backend/requirements-termux.txt || {
+    # pillow-heif 휠 실패 시 그것만 빼고 재시도 (HEIC는 선택 기능)
+    echo "⚠️  일부(HEIC 등) 설치 실패 — 필수 항목만 재시도"
+    grep -v pillow-heif backend/requirements-termux.txt > /tmp/req-core.txt
+    .venv/bin/pip install -q -r /tmp/req-core.txt
+  }
+
+  echo "→ 경량 AI(ONNX) 설치…"
+  if .venv/bin/pip install -q onnxruntime tokenizers; then
+    AI_BACKEND=clip-onnx
+  else
+    echo "⚠️  onnxruntime 휠이 이 Python 버전에 없어 AI 의미검색을 끄고 설치합니다."
+    echo "   (날짜·장소·글자(OCR)·얼굴 검색은 그대로 동작)"
+    AI_BACKEND=off
   fi
+
+  # 시스템 opencv/numpy/pillow가 venv에서 보이는지 확인
+  .venv/bin/python -c "import cv2, numpy, PIL; print(\"  ✓ cv2\", cv2.__version__, \"numpy\", numpy.__version__)"
+
+  # run.sh 생성 (install.sh를 거치지 않으므로 직접)
+  if [ "$AI_BACKEND" = "off" ]; then AI_SEARCH=0; EXPORT_BACKEND=""; \
+  else AI_SEARCH=1; EXPORT_BACKEND="export EMBED_BACKEND=clip-onnx"; fi
+  cat > run.sh <<RUNEOF
+#!/usr/bin/env bash
+cd "\$(dirname "\$0")"
+export AI_SEARCH=$AI_SEARCH
+$EXPORT_BACKEND
+# 사진 폴더: 내부 공유저장소 /media/shared, SD카드 /media/sdcard
+# export PHOTOS_DIR=/media/sdcard/DCIM
+echo "📷 PhotoNest AI — http://localhost:8765"
+exec .venv/bin/uvicorn backend.main:app --host "\${HOST:-127.0.0.1}" --port 8765
+RUNEOF
+  chmod +x run.sh
+  mkdir -p photos
+  echo "✅ proot 내부 설치 완료 (AI: $AI_BACKEND)"
 '
 
 # ---- Termux 쪽 실행 스크립트 생성 ----

@@ -132,12 +132,14 @@ function tryUICommand(text) {
   }
 
   // --- 슬라이드쇼 ---
+  // 중지어에 "종료/끝/스톱"류 포함 — "슬라이드쇼 종료"가 시작으로 오인되던 버그
+  const SS_STOP = /(멈춰|멈춤|중지|중단|꺼|끄|정지|그만|종료|끝내|끝|스톱|스탑|나가)/;
   if (/(슬라이드쇼|슬라이드)/.test(t)) {
-    if (/(멈춰|중지|꺼|정지|그만)/.test(t)) { stopSlideshow(); speak("슬라이드쇼를 멈췄어요."); }
+    if (SS_STOP.test(t)) { stopSlideshow(); speak("슬라이드쇼를 멈췄어요."); }
     else { startSlideshow(Math.max(lbIndex, 0)); speak("슬라이드쇼를 시작할게요."); }
     return true;
   }
-  if (!$("#slideshow").hidden && /(멈춰|중지|꺼|정지|그만|닫아)/.test(t)) {
+  if (!$("#slideshow").hidden && (SS_STOP.test(t) || /닫아/.test(t))) {
     stopSlideshow(); speak("슬라이드쇼를 멈췄어요."); return true;
   }
 

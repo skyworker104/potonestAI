@@ -385,6 +385,7 @@ def chat(req: ChatRequest):
         skill, sim = skills.match(target)
         if skill:
             search_text = skill.get("search_text")
+            place_text = skill.get("place_text")   # 지명은 재사용 시에도 메타 필터로
             media_type = media_type or skill.get("media_type")
             if skill.get("place") and not place:   # 스킬이 학습한 위치 선호
                 place = skill["place"]; bbox = place["bbox"]
@@ -404,8 +405,11 @@ def chat(req: ChatRequest):
             if not person and parsed.get("person"):
                 person = db.match_person_name(parsed["person"])
             engine = parsed.get("engine")
-            if engine in ("local-llm", "claude") and search_text:
-                sk = skills.add(target, search_text, parsed.get("media_type"))
+            # LLM류 엔진의 해석은 스킬로 학습 — place_text도 함께 캐싱해
+            # 재사용 시 지명이 의미검색으로 새지 않게 한다
+            if engine in ("local-llm", "claude", "openrouter") and (search_text or place_text):
+                sk = skills.add(target, search_text, parsed.get("media_type"),
+                                place_text=place_text)
                 if sk:
                     skill_used = sk["label"]
 

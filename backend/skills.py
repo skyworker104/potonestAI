@@ -110,18 +110,20 @@ def match(question):
     return None, best_sim
 
 
-def add(question, search_text, media_type=None, place=None):
+def add(question, search_text, media_type=None, place=None, place_text=None):
     """검색을 스킬로 저장(자동). 매우 유사한 스킬엔 예시만 추가.
 
     place: 피드백으로 학습된 위치 선호 {name, bbox} (지명 검색 보정).
-    search_text 없이 place만 있어도 저장(순수 위치 스킬).
+    place_text: LLM이 의미 분석으로 분리한 지명("고양시") — 재사용 시에도
+      의미검색이 아닌 지명 메타데이터 필터로 실행되도록 함께 캐싱.
+    search_text 없이 place/place_text만 있어도 저장(순수 위치 스킬).
     """
-    if not search_text and not place:
+    if not search_text and not place and not place_text:
         return None
     qv = _embed(question)
     skills = _load()
 
-    # 이미 거의 같은 스킬이 있으면 예시만 보태고(+위치 갱신) 끝
+    # 이미 거의 같은 스킬이 있으면 예시만 보태고(+위치·지명 갱신) 끝
     if qv is not None:
         for sk in skills:
             emb = sk.get("embedding")
@@ -133,6 +135,8 @@ def add(question, search_text, media_type=None, place=None):
                     sk["place"] = place
                 if search_text:
                     sk["search_text"] = search_text
+                if place_text:
+                    sk["place_text"] = place_text
                 _save()
                 return sk
 
@@ -143,6 +147,7 @@ def add(question, search_text, media_type=None, place=None):
         "search_text": search_text,
         "media_type": media_type,
         "place": place,
+        "place_text": place_text,
         "embedding": qv.tolist() if qv is not None else None,
         "uses": 0,
         "created_at": int(time.time()),

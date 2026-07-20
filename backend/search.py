@@ -183,15 +183,60 @@ def _ocr_matches(search_text, allowed_ids, by_id, top_k):
     return out[:top_k]
 
 
+# 한글 초성 목록 + 음성인식이 혼동하는 자음 가족(평음/된소리/거센소리 → 대표음)
+_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+_JUNG = ["ㅏ", "ㅐ", "ㅑ", "ㅒ", "ㅓ", "ㅔ", "ㅕ", "ㅖ", "ㅗ", "ㅘ", "ㅙ",
+         "ㅚ", "ㅛ", "ㅜ", "ㅝ", "ㅞ", "ㅟ", "ㅠ", "ㅡ", "ㅢ", "ㅣ"]
+_CONF_CHO = {"ㄲ": "ㄱ", "ㅋ": "ㄱ", "ㄸ": "ㄷ", "ㅌ": "ㄷ", "ㅃ": "ㅂ",
+             "ㅍ": "ㅂ", "ㅆ": "ㅅ", "ㅉ": "ㅈ", "ㅊ": "ㅈ"}
+_CONF_JUNG = {"ㅐ": "ㅔ", "ㅒ": "ㅖ"}  # 발음 동일 모음쌍
+
+
+def _decompose(ch):
+    """한글 음절 → (초성, 중성, 종성번호). 한글 아니면 None."""
+    code = ord(ch) - 0xAC00
+    if not 0 <= code < 11172:
+        return None
+    return _CHO[code // 588], _JUNG[(code % 588) // 28], code % 28
+
+
+def _similar_syllable(a, b):
+    """음성인식이 흔히 혼동하는 음절쌍인가 — "씨"↔"시"(ㅆ/ㅅ), "대"↔"데"(ㅐ/ㅔ).
+
+    "이"↔"시"처럼 전혀 다른 자음("고양이"→"고양시" 오탐)은 거부한다.
+    """
+    da, db = _decompose(a), _decompose(b)
+    if da is None or db is None:
+        return False  # 비한글 치환은 불허 (영문 오타는 정확일치만)
+    cho_a, jung_a, jong_a = da
+    cho_b, jung_b, jong_b = db
+    if jong_a != jong_b:
+        return False
+    diff_cho, diff_jung = cho_a != cho_b, jung_a != jung_b
+    if diff_cho and diff_jung:
+        return False
+    if diff_cho:  # 초성만 다름 — 평음/된소리/거센소리 가족만
+        return _CONF_CHO.get(cho_a, cho_a) == _CONF_CHO.get(cho_b, cho_b)
+    if diff_jung:  # 중성만 다름 — 발음 동일 모음쌍만
+        return _CONF_JUNG.get(jung_a, jung_a) == _CONF_JUNG.get(jung_b, jung_b)
+    return True
+
+
 def _lev1(a, b):
-    """편집거리 ≤1 여부 — 음성인식 변형("씨메르"↔"시메르")·오타 허용용."""
+    """편집거리 ≤1 여부 — 단, 치환은 음운 혼동쌍만 허용.
+
+    "씨메르"↔"시메르"(음성인식 변형)는 잡고,
+    "고양이"↔"고양시"(다른 단어)는 오탐하지 않는다.
+    삽입/삭제 1글자("통영"↔"통영시")는 그대로 허용.
+    """
     if a == b:
         return True
     la, lb = len(a), len(b)
     if abs(la - lb) > 1:
         return False
-    if la == lb:  # 치환 1
-        return sum(1 for x, y in zip(a, b) if x != y) == 1
+    if la == lb:  # 치환 1 — 혼동쌍 검사
+        pairs = [(x, y) for x, y in zip(a, b) if x != y]
+        return len(pairs) == 1 and _similar_syllable(*pairs[0])
     if la > lb:   # a를 짧은 쪽으로
         a, b, la, lb = b, a, lb, la
     i = j = diff = 0  # 삽입/삭제 1
@@ -232,8 +277,11 @@ def _word_frac(words, text):
     return total / len(words)
 
 
-# 이름 매칭용 조사 제거("하갓냐에서"→"하갓냐") 및 서술어 불용어
-_JOSA = re.compile(r"(에서의|에서|에게|한테|처럼|보다|으로|의|에|은|는|이|가|을|를|와|과|도|만|로)$")
+# 이름 매칭용 조사 제거("하갓냐에서"→"하갓냐") 및 서술어 불용어.
+# 주의: 한 글자 조사(이/가/도/의 등)는 명사 끝 글자와 구분이 안 돼 절대 떼지 않는다
+# — "고양이"→"고양"이 되어 '고양시' 사진이 오탐된 실사례. 두 글자 이상만 제거.
+# (한 글자 조사가 붙은 형태는 오타 허용(_lev1 삽입/삭제 1)이 대신 흡수한다)
+_JOSA = re.compile(r"(에서의|에서|에게서|에게|한테|처럼|보다|으로|까지|부터|마다|조차|밖에)$")
 _NAME_STOP = {"찍은", "찍었던", "나온", "있는", "갔던", "갔다온", "다녀온",
               "우리", "그때", "사진", "영상", "동영상", "비디오"}
 

@@ -181,7 +181,9 @@ export VISION_LLM_MODEL=qwen/qwen2.5-vl-7b   # LM Studio에 로드된 비전 모
 ## 안드로이드 태블릿에서 서버로 (Termux)
 
 RAM 4GB급 태블릿(Galaxy Tab A8 등)을 PhotoNest 단독 서버로 쓸 수 있습니다.
-Termux 안에 proot Ubuntu(루팅 불필요)를 깔고 경량(ONNX) AI로 동작합니다.
+Termux 안에 proot Debian(루팅 불필요)을 깔고 경량(ONNX) AI로 동작합니다.
+(Debian 12 = Python 3.11이라 모든 aarch64 휠이 존재 — Ubuntu 최신판의 갓 나온
+Python은 AI 라이브러리 휠이 없어 설치가 실패할 수 있어 Debian을 기본으로 씁니다.)
 
 ```bash
 # 1) F-Droid에서 Termux 설치 (Play스토어판은 구버전)

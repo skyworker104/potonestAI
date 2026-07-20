@@ -1,12 +1,12 @@
-# Termux/proot Ubuntu 전용 pip 목록 (install-termux.sh가 사용).
+# Termux/proot 전용 pip 목록 (install-termux.sh가 사용) — 전부 순수 파이썬(휠 무관).
 #
-# numpy·opencv·pillow·psutil은 pip로 받으면 소스 컴파일(scikit-build-core/CMake)에
-# 들어가 저사양 ARM에서 실패한다 → apt의 미리 빌드된 시스템 패키지를 쓰고
-# (venv를 --system-site-packages로 생성), 여기엔 순수 파이썬/안정적 aarch64 휠만 둔다.
+# numpy·opencv·pillow·psutil은 apt 시스템 바이너리를 쓰고(venv --system-site-packages),
+# 여기엔 어떤 Python 버전에서도 설치되는 순수 파이썬 패키지만 둔다.
+# 주의: anthropic SDK는 넣지 않는다 — Rust 의존성(jiter)이 최신 Python에서
+# 휠 없이 소스 빌드에 들어가 실패한다. 태블릿은 OpenRouter를 urllib로
+# 직접 호출하므로 SDK가 불필요하다.
 fastapi>=0.100
 uvicorn[standard]>=0.23
 piexif>=1.1.3
 python-multipart>=0.0.6
-anthropic>=0.34
-# HEIC(아이폰 사진) — 휠 실패 시 install 스크립트가 건너뛰고 계속 진행(선택 기능)
-pillow-heif>=0.16
+pytesseract>=0.3

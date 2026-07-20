@@ -5,12 +5,17 @@
 # 사용법:
 #   1) Termux에서 프로젝트를 받는다 (예: git clone <저장소URL> photonest)
 #   2) cd photonest && bash scripts/install-termux.sh
+#      배포판 바꾸려면:  DISTRO=ubuntu bash scripts/install-termux.sh
 #
-# 구조: Termux 네이티브는 파이썬 휠(onnxruntime/opencv)이 없어 빌드가 어렵다.
-# 대신 proot-distro Ubuntu(가짜 루트, 루팅 불필요)를 깔고 그 안에서
-# 표준 aarch64 휠로 설치한다. 프로젝트 폴더는 Termux 홈에 그대로 두고
-# proot 세션에 바인드 마운트한다 (사진/SD카드도 함께).
+# 왜 proot + Debian인가:
+#   Termux 네이티브는 파이썬 휠(onnxruntime 등)이 없어 빌드가 어렵다.
+#   → proot-distro(가짜 루트, 루팅 불필요) 안에서 표준 aarch64 휠로 설치한다.
+#   기본 배포판은 Debian 12(Python 3.11) — Ubuntu 최신판은 Python 3.14 같은
+#   갓 나온 버전이라 tokenizers/onnxruntime/jiter 등 Rust·C 확장의 휠이 아직
+#   없어 소스 컴파일에 들어가 실패한다. Debian 12는 전 패키지 휠이 존재한다.
 set -e
+
+DISTRO="${DISTRO:-debian}"
 
 if [ ! -f backend/main.py ]; then
   echo "❌ 프로젝트 루트에서 실행하세요: cd photonest && bash scripts/install-termux.sh"
@@ -19,7 +24,7 @@ fi
 PROJ=$(pwd)
 case "$PROJ" in *" "*) echo "❌ 프로젝트 경로에 공백이 있으면 안 됩니다: $PROJ"; exit 1;; esac
 
-echo "📷 PhotoNest — Termux(proot Ubuntu) 설치"
+echo "📷 PhotoNest — Termux(proot $DISTRO) 설치"
 echo
 
 pkg update -y
@@ -32,8 +37,8 @@ if [ ! -d "$HOME/storage" ]; then
   sleep 3
 fi
 
-echo "→ Ubuntu(proot) 설치 중… (최초 1회, 수 분)"
-proot-distro install ubuntu 2>/dev/null || echo "  ✓ Ubuntu 이미 설치됨"
+echo "→ $DISTRO(proot) 설치 중… (최초 1회, 수 분)"
+proot-distro install "$DISTRO" 2>/dev/null || echo "  ✓ $DISTRO 이미 설치됨"
 
 # 바인드 마운트: 프로젝트 + 내부 공유저장소 + (있으면) SD카드
 BINDS="--bind $PROJ:/opt/photonest --bind $HOME/storage/shared:/media/shared"
@@ -43,19 +48,21 @@ for d in "$HOME"/storage/external-*; do
 done
 [ -n "$SD" ] && BINDS="$BINDS --bind $SD:/media/sdcard"
 
-echo "→ Ubuntu 안에 의존성 + PhotoNest(경량 AI) 설치 중…"
-# 핵심 전략: numpy·opencv·pillow·psutil은 pip로 받으면 소스 컴파일(CMake)에 들어가
-# 저사양 ARM에서 실패한다 → apt의 미리 빌드된 바이너리를 쓰고, venv는
-# --system-site-packages로 만들어 그것들을 그대로 재사용한다. pip는 순수 파이썬과
-# 안정적 aarch64 휠(onnxruntime 등)만 설치한다.
-proot-distro login ubuntu $BINDS -- bash -c '
+echo "→ $DISTRO 안에 의존성 + PhotoNest 설치 중…"
+# 핵심 전략: 컴파일이 필요한 건 하나도 pip로 받지 않는다.
+#  - numpy·opencv·pillow·psutil → apt 미리 빌드 바이너리(+venv --system-site-packages)
+#  - 순수 파이썬(fastapi 등) → pip
+#  - onnxruntime·tokenizers·pillow-heif → pip이되 --only-binary(휠만, 소스빌드 금지)
+#    로 받아 휠이 없으면 즉시(느린 Rust 컴파일 없이) 실패하고 그 기능만 끈다.
+proot-distro login "$DISTRO" $BINDS -- bash -c '
   set -e
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   echo "→ 시스템 바이너리 패키지 설치 (컴파일 회피)…"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+  apt-get install -y -qq \
     python3-full python3-venv python3-pip \
     python3-numpy python3-opencv python3-pil python3-psutil \
-    libglib2.0-0 libgl1 tesseract-ocr tesseract-ocr-kor
+    libgl1 libglib2.0-0 tesseract-ocr tesseract-ocr-kor
   echo "→ Python: $(python3 --version)"
 
   cd /opt/photonest
@@ -63,27 +70,28 @@ proot-distro login ubuntu $BINDS -- bash -c '
   .venv/bin/pip install --upgrade pip -q
 
   echo "→ 순수 파이썬 의존성 설치…"
-  .venv/bin/pip install -q -r backend/requirements-termux.txt || {
-    # pillow-heif 휠 실패 시 그것만 빼고 재시도 (HEIC는 선택 기능)
-    echo "⚠️  일부(HEIC 등) 설치 실패 — 필수 항목만 재시도"
-    grep -v pillow-heif backend/requirements-termux.txt > /tmp/req-core.txt
-    .venv/bin/pip install -q -r /tmp/req-core.txt
-  }
+  .venv/bin/pip install -q -r backend/requirements-termux.txt
 
-  echo "→ 경량 AI(ONNX) 설치…"
-  if .venv/bin/pip install -q onnxruntime tokenizers; then
-    AI_BACKEND=clip-onnx
-  else
-    echo "⚠️  onnxruntime 휠이 이 Python 버전에 없어 AI 의미검색을 끄고 설치합니다."
-    echo "   (날짜·장소·글자(OCR)·얼굴 검색은 그대로 동작)"
-    AI_BACKEND=off
-  fi
-
-  # 시스템 opencv/numpy/pillow가 venv에서 보이는지 확인
+  # 시스템 opencv/numpy/pillow가 venv에서 보이는지 확인 (핵심 — 실패하면 중단)
   .venv/bin/python -c "import cv2, numpy, PIL; print(\"  ✓ cv2\", cv2.__version__, \"numpy\", numpy.__version__)"
 
+  echo "→ 경량 AI(ONNX 의미검색) 설치 시도…"
+  if .venv/bin/pip install -q --only-binary=:all: onnxruntime tokenizers; then
+    AI_BACKEND=clip-onnx
+    echo "  ✓ AI 의미검색 사용 가능"
+  else
+    AI_BACKEND=off
+    echo "  ⚠️  이 Python($(python3 -V 2>&1))용 onnxruntime/tokenizers 휠이 없어"
+    echo "     AI 의미검색을 끄고 설치합니다(날짜·장소·글자·얼굴 검색은 동작)."
+    echo "     전체 기능을 원하면 Debian으로: proot-distro remove $DISTRO 후 재실행"
+  fi
+
+  # HEIC(아이폰 사진) 지원 — 휠 있으면만 (선택)
+  .venv/bin/pip install -q --only-binary=:all: pillow-heif && echo "  ✓ HEIC 지원" \
+    || echo "  · HEIC 미지원(선택 기능, 건너뜀)"
+
   # run.sh 생성 (install.sh를 거치지 않으므로 직접)
-  if [ "$AI_BACKEND" = "off" ]; then AI_SEARCH=0; EXPORT_BACKEND=""; \
+  if [ "$AI_BACKEND" = "off" ]; then AI_SEARCH=0; EXPORT_BACKEND="# (AI 의미검색 비활성 — 휠 없음)"; \
   else AI_SEARCH=1; EXPORT_BACKEND="export EMBED_BACKEND=clip-onnx"; fi
   cat > run.sh <<RUNEOF
 #!/usr/bin/env bash
@@ -114,7 +122,7 @@ if tmux has-session -t photonest 2>/dev/null; then
   exit 0
 fi
 tmux new-session -d -s photonest \\
-  "proot-distro login ubuntu $BINDS -- bash -c 'cd /opt/photonest && HOST=0.0.0.0 PHOTOS_DIR=\\\${PHOTOS_DIR:-/opt/photonest/photos} ./run.sh'"
+  "proot-distro login $DISTRO $BINDS -- bash -c 'cd /opt/photonest && HOST=0.0.0.0 PHOTOS_DIR=\\\${PHOTOS_DIR:-/opt/photonest/photos} ./run.sh'"
 echo "✅ PhotoNest 시작됨 (tmux 세션 photonest)"
 echo "   이 태블릿에서:   http://localhost:8765"
 echo "   같은 와이파이:   http://<태블릿IP>:8765  (설정→와이파이→현재 네트워크에서 IP 확인)"

@@ -28,7 +28,7 @@ echo "📷 PhotoNest — Termux(proot $DISTRO) 설치"
 echo
 
 pkg update -y
-pkg install -y proot-distro tmux termux-api >/dev/null || pkg install -y proot-distro tmux
+pkg install -y proot-distro tmux termux-api curl >/dev/null || pkg install -y proot-distro tmux curl
 
 # 공유 저장소 권한 (사진 폴더/SD카드 접근) — 팝업이 뜨면 허용
 if [ ! -d "$HOME/storage" ]; then
@@ -120,6 +120,27 @@ RUNEOF
   mkdir -p photos
   echo "✅ proot 내부 설치 완료 (AI: $AI_BACKEND)"
 '
+
+# ---- 폰 업로더 앱(APK) 자동 다운로드 ----
+# APK는 data/(gitignore)에 있어 clone에 안 딸려온다 → EAS에서 내려받아
+# 서버가 '폰 연결' 탭 QR로 배포하게 한다. 실패해도 설치는 계속(선택 기능).
+APK_DST="$PROJ/data/app/photonest-uploader.apk"
+if [ -f "$APK_DST" ]; then
+  echo "→ 폰 업로더 앱(APK) 이미 있음 — 건너뜀"
+elif [ -f "$PROJ/mobile/APK_URL.txt" ]; then
+  APK_URL=$(tr -d ' \t\r\n' < "$PROJ/mobile/APK_URL.txt")
+  if [ -n "$APK_URL" ]; then
+    echo "→ 폰 업로더 앱(APK) 다운로드 중… (~80MB)"
+    mkdir -p "$PROJ/data/app"
+    if curl -fL --retry 2 -o "$APK_DST.part" "$APK_URL" && [ -s "$APK_DST.part" ]; then
+      mv "$APK_DST.part" "$APK_DST"
+      echo "  ✓ APK 준비 완료 — '폰 연결' 탭 QR로 폰에 설치하세요"
+    else
+      rm -f "$APK_DST.part"
+      echo "  ⚠️  APK 다운로드 실패(선택 기능) — 나중에 '폰 연결' 탭 안내대로 받으면 됩니다"
+    fi
+  fi
+fi
 
 # ---- Termux 쪽 실행 스크립트 생성 ----
 cat > "$HOME/run-photonest.sh" <<EOF

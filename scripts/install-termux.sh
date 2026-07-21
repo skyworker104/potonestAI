@@ -69,7 +69,17 @@ proot-distro login "$DISTRO" $BINDS -- bash -c '
   echo "→ Python: $(python3 --version)"
 
   cd /opt/photonest
+  # 이전에 Termux 네이티브로 만든 .venv가 남아 있으면 그 파이썬은 proot 안에서
+  # 동작하지 않는다(경로가 /data/data/com.termux/... 를 가리킴). 그대로 재사용하면
+  # pip이 네이티브에서 돌아 manylinux 휠을 못 쓰고 전부 소스 빌드→실패한다.
+  # → venv 파이썬이 proot 안에서 실제로 실행되는지 검사하고, 아니면 다시 만든다.
+  if [ -d .venv ] && ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+    echo "→ 호환되지 않는 이전 venv 감지 — 다시 만듭니다"
+    rm -rf .venv
+  fi
   [ -d .venv ] || python3 -m venv --system-site-packages .venv
+  # venv가 proot(Debian) 파이썬으로 만들어졌는지 최종 확인
+  .venv/bin/python -c "import sys; assert \"com.termux\" not in sys.executable, sys.executable"
   .venv/bin/pip install --upgrade pip -q
 
   echo "→ 순수 파이썬 의존성 설치…"

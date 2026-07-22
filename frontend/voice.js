@@ -290,13 +290,18 @@ function initRecognition() {
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       voiceMode = false;
       permissionDenied = true;
+      stopKeepAlive();
+      $("#voice-orb").classList.remove("listening");
       $("#voice-state").textContent = "마이크 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요.";
     }
+    // no-speech · network · aborted 등은 무시 — onend가 이어서 재시작한다.
   };
   r.onend = () => {
     recognizing = false;
     $("#voice-orb").classList.remove("listening");
-    if (voiceMode && !speaking) setTimeout(startListening, 300);
+    // 모바일/태블릿 크롬은 continuous를 무시해 매 발화·침묵 후 세션이 끊긴다.
+    // voiceMode가 켜져 있으면 즉시 다시 듣기 시작(연속 대화 유지).
+    if (voiceMode && !speaking) setTimeout(startListening, 250);
     else if (!voiceMode && !permissionDenied) $("#voice-state").textContent = "마이크를 눌러 음성 대화를 시작하세요";
   };
   return r;
@@ -310,6 +315,25 @@ function startListening() {
     setTimeout(startListening, 400); // 이전 세션 정리 중이면 재시도
   }
 }
+
+/* ---------------- 듣기 유지 watchdog ----------------
+   모바일/태블릿에서 onend/onerror를 놓치거나 재시작이 조용히 실패해도
+   주기적으로 듣기 상태를 복구한다(마이크 계속 켜짐 보장). */
+let keepAliveTimer = null;
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveTimer = setInterval(() => {
+    if (voiceMode && !recognizing && !speaking) startListening();
+  }, 2500);
+}
+function stopKeepAlive() {
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
+}
+
+// 탭 복귀 시 듣기 재개 (백그라운드 전환 중 세션이 끊긴 경우 복구)
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && voiceMode && !recognizing && !speaking) startListening();
+});
 
 /* ---------------- 음성 합성 (TTS) ---------------- */
 function speak(text) {
@@ -349,10 +373,13 @@ $("#voice-orb").onclick = () => {
     if (!recog) recog = initRecognition();
     addMsg("음성 대화 모드 시작. 예: \"바닷가 사진 찾아줘\", \"슬라이드쇼 시작\", \"가족 앨범 만들어줘\", \"즐겨찾기에 추가해줘\"", "ai");
     startListening();
+    startKeepAlive(); // 태블릿에서 마이크가 계속 켜져 있도록 유지
   } else {
+    stopKeepAlive();
     speechSynthesis.cancel();
     if (recognizing) try { recog.stop(); } catch (_) {}
     speaking = false;
+    $("#voice-orb").classList.remove("listening");
     $("#voice-state").textContent = "마이크를 눌러 음성 대화를 시작하세요";
   }
 };

@@ -97,6 +97,30 @@ $("#chat-toggle").onclick = () => {
   document.body.classList.toggle("chat-hidden");
 };
 
+/* ---------------- 전체화면 (태블릿 시스템바 숨기기) ---------------- */
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+async function toggleFullscreen() {
+  try {
+    if (isFullscreen()) {
+      await (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      const el = document.documentElement;
+      await (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+    }
+  } catch (_) { /* 사용자 제스처 필요/미지원 브라우저는 무시 */ }
+}
+function syncFullscreenUI() {
+  const on = isFullscreen();
+  document.body.classList.toggle("is-fullscreen", on);
+  const btn = $("#fullscreen-btn");
+  if (btn) btn.querySelector("label").textContent = on ? "나가기" : "전체화면";
+}
+$("#fullscreen-btn").onclick = toggleFullscreen;
+document.addEventListener("fullscreenchange", syncFullscreenUI);
+document.addEventListener("webkitfullscreenchange", syncFullscreenUI);
+
 /* ---------------- 그리드 타일 ---------------- */
 function makeTile(it, index) {
   const div = document.createElement("div");

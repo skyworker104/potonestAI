@@ -315,28 +315,63 @@ def clean_duplicates():
 _last_search = {}
 
 
+# 완화 라벨 → 답변 문구 조각 (search_retry가 적용한 완화를 사용자에게 설명)
+RELAX_PHRASES = {
+    "date_widened": "기간을 조금 넓혀서",
+    "date_removed": "날짜 조건 없이",
+    "place_to_meta": "위치정보 대신 앨범·폴더 이름 기준으로",
+    "place_removed": "장소 조건을 빼고",
+    "english_retry": "표현을 바꿔서",
+}
+
+
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
                 hour_from=None, hour_to=None, place_text=None):
+    from . import search_retry
+
     only_ids = db.person_media_ids(person["id"]) if person else None
     # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체
     top_k = 60 if search_text else 1000
-    results = search.find(
-        search_text, date_from=date_from, date_to=date_to, media_type=media_type,
-        raw_query=message, only_ids=only_ids, bbox=bbox, exclude_ids=exclude_ids,
-        hour_from=hour_from, hour_to=hour_to, place_text=place_text,
-        top_k=top_k,
+    plan = dict(
+        search_text=search_text, date_from=date_from, date_to=date_to,
+        media_type=media_type, raw_query=message, only_ids=only_ids,
+        bbox=bbox, exclude_ids=exclude_ids, hour_from=hour_from,
+        hour_to=hour_to, place_text=place_text, top_k=top_k,
     )
+    # 저품질 판정 기준·영어 재시도 함수 주입 (AI 스택이 있을 때만)
+    quality_bar = english_fn = None
+    if search_text and indexer.ai_available():
+        try:
+            from . import embedder
+            P = embedder.params()
+            quality_bar = P["score_threshold"] + 0.5 * P["score_margin"]
+            if not embedder.needs_english():  # CLIP-ONNX는 find가 이미 영어 변환
+                english_fn = llm._ko_to_en
+        except Exception:
+            pass
+    results, relaxed = search_retry.run_with_retry(
+        plan, search.find,
+        place_name=place["name"] if place else None,
+        quality_bar=quality_bar, english_fn=english_fn,
+    )
+
     n = len(results)
     loc = f"{place['name']} 지역(위치 기준)에서 " if place \
         else (f"'{place_text}'에서 " if place_text else "")
     if n == 0:
         reply = "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
+    elif relaxed == ["nearest_time"]:
+        reply = f"요청하신 시기의 사진이 없어서, 가장 가까운 시기의 사진 {n}장을 보여드릴게요."
+    elif relaxed:
+        how = ", ".join(RELAX_PHRASES.get(l, l) for l in relaxed)
+        reply = f"조건 그대로는 없어서 {how} 다시 찾았어요. 모두 {n}장이에요."
     elif person and not search_text and not place:
         reply = f"'{person['name']}'님이 나온 사진 {n}장을 찾았어요."
     else:
         reply = f"{loc}모두 {n}장을 찾았어요."
 
+    # _last_search에는 사용자가 요청한 원 조건을 저장 (피드백 교정은 원 의도 기준)
     _last_search.update(
         query=message, place=place, bbox=bbox, search_text=search_text,
         date_from=date_from, date_to=date_to, media_type=media_type,
@@ -345,7 +380,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     )
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
-            "results": results}
+            "relaxed": relaxed, "results": results}
 
 
 @app.post("/api/chat")

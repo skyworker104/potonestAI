@@ -256,6 +256,22 @@ let ssIndex = 0;
 let ssTimer = null;
 let ssPaused = false;
 
+/* 슬라이드쇼 중 화면 꺼짐(절전) 방지 — Screen Wake Lock API */
+let wakeLock = null;
+async function acquireWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try { wakeLock = await navigator.wakeLock.request("screen"); }
+  catch (_) { /* 배터리 절약 모드 등에서 거부될 수 있음 */ }
+}
+async function releaseWakeLock() {
+  try { await wakeLock?.release(); } catch (_) {}
+  wakeLock = null;
+}
+// 백그라운드에서 돌아오면 wake lock이 자동 해제되므로 슬라이드쇼 중이면 재획득
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !$("#slideshow").hidden) acquireWakeLock();
+});
+
 function ssShow(i) {
   const items = state.currentItems.filter((it) => it.type === "image");
   if (!items.length) return;
@@ -277,6 +293,7 @@ function startSlideshow(fromIndex = 0) {
   ssShow(Math.max(fromIndex, 0));
   clearInterval(ssTimer);
   ssTimer = setInterval(() => { if (!ssPaused) ssShow(ssIndex + 1); }, 4000);
+  acquireWakeLock(); // 슬라이드쇼 동안 절전(화면 꺼짐) 방지
   if (document.documentElement.requestFullscreen) {
     document.documentElement.requestFullscreen().catch(() => {});
   }
@@ -286,6 +303,7 @@ function stopSlideshow() {
   $("#slideshow").hidden = true;
   clearInterval(ssTimer);
   ssTimer = null;
+  releaseWakeLock();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 

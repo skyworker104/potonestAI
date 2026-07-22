@@ -260,15 +260,21 @@ function handleUtterance(text) {
 
 /* ---------------- 음성 인식 (STT) ---------------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 let recog = null;
 let permissionDenied = false;
+// 같은 발화가 여러 번 최종 인식되는 것을 막는 중복 가드
+let lastFinalText = "";
+let lastFinalAt = 0;
 
 function initRecognition() {
   if (!SR) return null;
   const r = new SR();
   r.lang = "ko-KR";
   r.interimResults = true;
-  r.continuous = true; // 침묵해도 인식 세션을 유지 (연속 대화)
+  // 모바일/태블릿 크롬은 continuous=true에서 같은 발화를 3~4번 재인식하는 버그가 있다.
+  // 모바일은 세션당 1발화(continuous=false)로 처리하고, 연속 대화는 onend→재시작이 담당.
+  r.continuous = !IS_MOBILE;
 
   r.onstart = () => {
     recognizing = true;
@@ -280,7 +286,13 @@ function initRecognition() {
       const res = e.results[i];
       if (res.isFinal) {
         const text = res[0].transcript.trim();
-        if (text) handleUtterance(text);
+        if (!text) continue;
+        // 동일 발화가 2.5초 안에 다시 최종 인식되면 무시(모바일 중복 버그 방지)
+        const now = Date.now();
+        if (text === lastFinalText && now - lastFinalAt < 2500) continue;
+        lastFinalText = text;
+        lastFinalAt = now;
+        handleUtterance(text);
       } else {
         $("#voice-state").textContent = res[0].transcript;
       }

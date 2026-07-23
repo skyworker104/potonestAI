@@ -337,7 +337,8 @@ def _combine_ids(base_ids, person_ids):
 
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
-                hour_from=None, hour_to=None, place_text=None, base_ids=None):
+                hour_from=None, hour_to=None, place_text=None, base_ids=None,
+                skill_id=None):
     from . import search_retry
 
     person_ids = db.person_media_ids(person["id"]) if person else None
@@ -392,6 +393,9 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, hour_from=hour_from, hour_to=hour_to,
         place_text=place_text, result_ids=[r["id"] for r in results],
+        skill_id=skill_id,      # 피드백을 귀속시킬 스킬
+        view_credited=False,    # 열람 신호는 검색당 1회만 반영
+        refined=refined,        # 정제 검색이면 긍정 피드백 때 스킬로 저장하지 않음
     )
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
@@ -441,6 +445,7 @@ def chat(req: ChatRequest):
     place_text = None
     engine = "location" if place else None
     skill_used = None
+    skill_id = None
 
     if not place or core_has_content:
         target = core if place else message
@@ -453,6 +458,7 @@ def chat(req: ChatRequest):
                 place = skill["place"]; bbox = place["bbox"]
             engine = "skill"
             skill_used = skill["label"]
+            skill_id = skill["id"]
             skills.record_use(skill["id"])
         else:
             parsed = llm.parse(target, history=history)
@@ -478,6 +484,7 @@ def chat(req: ChatRequest):
                                 place_text=place_text)
                 if sk:
                     skill_used = sk["label"]
+                    skill_id = sk["id"]
 
     # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
     if place_text and not place:
@@ -490,18 +497,54 @@ def chat(req: ChatRequest):
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
-        base_ids=base_ids,
+        base_ids=base_ids, skill_id=skill_id,
     )
 
 
 def _handle_feedback(message, fb):
-    """직전 검색을 피드백대로 교정 — 주로 지명을 위치(GPS)로 정확히."""
+    """직전 검색에 대한 피드백 처리 — 긍정은 학습 강화, 부정은 교정+약화."""
     from . import skills, places
     ls = _last_search
+
+    # 긍정 — 사용한 스킬을 강화하고, 스킬 없이 찾은 검색은 지금 스킬로 확정 저장
+    if fb["type"] == "positive":
+        sid = ls.get("skill_id")
+        if sid:
+            skills.reinforce(sid, 1.0)
+        elif not ls.get("refined") and (
+                ls.get("search_text") or ls.get("place") or ls.get("place_text")):
+            sk = skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"),
+                            place=ls.get("place"), place_text=ls.get("place_text"))
+            if sk:
+                skills.reinforce(sk["id"], 1.0)
+                ls["skill_id"] = sk["id"]
+        return {"reply": "다행이에요! 이 검색 방법은 기억해 뒀다가 다음엔 더 빨리 찾아드릴게요.",
+                "intent": "chat", "engine": "feedback", "results": []}
+
+    # 부정 — 사용한 스킬의 신뢰도 하락 (완전히 틀림은 강하게, 부분 교정은 절반)
+    sid = ls.get("skill_id")
+    if sid:
+        skills.penalize(sid, 1.0 if fb["type"] == "wrong" else 0.5)
+
     place = places.detect(message) or ls.get("place")
 
-    # 위치로 좁힐 지명이 없으면 안내
     if not place:
+        # 스킬 경유 검색이 틀렸다면 스킬을 우회해 LLM 재해석으로 1회 재시도
+        if fb["type"] == "wrong" and sid:
+            parsed = llm.parse(ls["query"])
+            if parsed.get("intent") == "search":
+                result = _run_search(
+                    ls["query"], search_text=parsed.get("search_text"),
+                    bbox=None, place=None,
+                    date_from=parsed.get("date_from") or ls.get("date_from"),
+                    date_to=parsed.get("date_to") or ls.get("date_to"),
+                    media_type=parsed.get("media_type") or ls.get("media_type"),
+                    person=ls.get("person"), hour_from=ls.get("hour_from"),
+                    hour_to=ls.get("hour_to"),
+                    place_text=parsed.get("place_text"), engine="reparse",
+                )
+                result["reply"] = "다시 해석해서 찾아봤어요. " + result["reply"]
+                return result
         return {"reply": "어느 지역 사진인지 알려주시면 위치 정보로 정확히 찾아드릴게요. 예: \"제주도 사진\"",
                 "intent": "chat", "engine": "instant", "results": []}
 
@@ -512,12 +555,35 @@ def _handle_feedback(message, fb):
         hour_from=ls.get("hour_from"), hour_to=ls.get("hour_to"), engine="location",
     )
     # 피드백을 스킬로 학습 → 다음에 같은 류 질의는 위치로 처리
-    skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"), place=place)
+    sk = skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"), place=place)
+    if sk:
+        _last_search["skill_id"] = sk["id"]  # 이어지는 피드백을 이 스킬에 귀속
     n = len(result["results"])
     result["reply"] = (f"네, {place['name']} 위치 정보를 기준으로 다시 찾았어요. "
                        f"이제 {n}장이에요. 앞으로 비슷한 검색도 위치로 정확히 찾을게요.")
     result["engine"] = "feedback"
     return result
+
+
+class ViewFeedback(BaseModel):
+    media_id: str
+
+
+@app.post("/api/feedback/view")
+def feedback_view(req: ViewFeedback):
+    """암묵적 긍정 신호 — 검색 결과에서 사진을 크게 열어봤다는 것은
+    검색이 의도에 맞았을 가능성이 높다는 뜻. 저가중(+0.3)으로 스킬 강화.
+
+    검색당 1회만 반영 — 슬라이드쇼·연속 열람으로 과대 학습되는 것 방지.
+    """
+    from . import skills
+    ls = _last_search
+    if (req.media_id in (ls.get("result_ids") or [])
+            and not ls.get("view_credited") and ls.get("skill_id")):
+        ls["view_credited"] = True
+        skills.reinforce(ls["skill_id"], 0.3)
+        return {"ok": True, "credited": True}
+    return {"ok": True, "credited": False}
 
 
 # ---------- 검색 스킬 / 도움말 ----------

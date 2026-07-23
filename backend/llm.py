@@ -273,13 +273,24 @@ def detect_refine(message):
     return re.sub(r"\s+", " ", remainder).strip()
 
 
-def detect_feedback(message):
-    """검색 결과에 대한 교정 피드백 의도 감지. 없으면 None.
+# 긍정 확인 표현 — 검색 직후의 짧은 단독 발화만 긍정 피드백으로 본다
+_POSITIVE = re.compile(
+    r"(맞아|맞네|맞았|그거야|그거지|좋아|좋네|잘\s*찾|딱이야|딱이네|딱맞|완벽|고마워|고맙|감사|굿|나이스)"
+)
 
-    type: 'location'(위치로 정확히), 'wrong'(틀림/섞임), 'only'(특정 지역만),
-          'exclude'(특정 지역 빼기)
+
+def detect_feedback(message):
+    """검색 결과에 대한 피드백 의도 감지. 없으면 None.
+
+    type: 'positive'(잘 찾음 — 학습 강화), 'location'(위치로 정확히),
+          'wrong'(틀림/섞임), 'only'(특정 지역만), 'exclude'(특정 지역 빼기)
     """
     t = message.replace(" ", "")
+    # 긍정 — 짧은 확인·감사 단독 발화만. "좋아 그럼 제주도 사진 찾아줘"처럼
+    # 새 요청이 이어지는 발화는 일반 검색으로 흘려보낸다.
+    if len(t) <= 12 and _POSITIVE.search(t) \
+            and not re.search(r"(찾아줘|찾아봐|보여줘|검색해|골라줘)", t):
+        return {"type": "positive"}
     # "X 아닌 거/것 빼줘" → X만 남기기
     m = re.search(r"(아닌|아니).{0,4}(빼|제외|지워|없애|말고)", t)
     if m:

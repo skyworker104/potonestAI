@@ -87,10 +87,58 @@ def _embed(text):
         return None
 
 
+# ---------- 신뢰도 (피드백 학습) ----------
+# success/fail은 사용자 피드백의 가중 누적:
+#   명시적 긍정("맞아/고마워") +1.0, 결과 열람 +0.3, 부정("틀렸어") +1.0(fail)
+# 스키마 v1(success/fail 없음)은 조회 시 0으로 간주 — 파일 마이그레이션 불필요.
+
+RETIRE_FAILS = 3.0  # 성공 없이 이만큼 실패가 쌓이면 매칭에서 제외(도태)
+
+
+def _threshold(sk):
+    """스킬별 재사용 문턱 — 성공 우세면 관대하게, 실패 우세면 엄격하게.
+
+    반환 None = 도태(매칭 제외). 파일에서 지우지는 않는다 —
+    자동 삭제는 오판 시 복구 불가라 도움말 UI의 수동 삭제만 남긴다.
+    """
+    s, f = sk.get("success", 0.0), sk.get("fail", 0.0)
+    if f >= RETIRE_FAILS and s <= 0:
+        return None
+    if s - f >= 2:
+        return 0.85
+    if f > s:
+        return 0.92
+    return MATCH_THRESHOLD
+
+
+def reinforce(skill_id, weight=1.0):
+    """긍정 피드백 — 성공 가중 누적. 반환: 반영 여부."""
+    for sk in _load():
+        if sk["id"] == skill_id:
+            sk["success"] = sk.get("success", 0.0) + weight
+            _save()
+            return True
+    return False
+
+
+def penalize(skill_id, weight=1.0):
+    """부정 피드백 — 실패 가중 누적. 반환: 반영 여부."""
+    for sk in _load():
+        if sk["id"] == skill_id:
+            sk["fail"] = sk.get("fail", 0.0) + weight
+            _save()
+            return True
+    return False
+
+
 # ---------- 매칭 / 등록 ----------
 
 def match(question):
-    """질문과 의미가 유사한 스킬을 반환. 없으면 None."""
+    """질문과 의미가 유사한 스킬을 반환. 없으면 None.
+
+    스킬별 신뢰도 문턱(_threshold)을 적용 — 실패가 쌓인 스킬은
+    거의 똑같은 질문에만 반응하고, 도태된 스킬은 무시된다.
+    """
     skills = _load()
     if not skills:
         return None, 0.0
@@ -102,10 +150,13 @@ def match(question):
         emb = sk.get("embedding")
         if not emb:
             continue
+        th = _threshold(sk)
+        if th is None:
+            continue  # 도태된 스킬
         sim = float(np.array(emb, dtype=np.float32) @ qv)
-        if sim > best_sim:
+        if sim >= th and sim > best_sim:
             best, best_sim = sk, sim
-    if best and best_sim >= MATCH_THRESHOLD:
+    if best:
         return best, best_sim
     return None, best_sim
 
@@ -150,6 +201,8 @@ def add(question, search_text, media_type=None, place=None, place_text=None):
         "place_text": place_text,
         "embedding": qv.tolist() if qv is not None else None,
         "uses": 0,
+        "success": 0.0,
+        "fail": 0.0,
         "created_at": int(time.time()),
         "last_used": None,
     }

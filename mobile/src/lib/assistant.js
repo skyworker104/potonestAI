@@ -24,6 +24,8 @@ const SYNONYMS = {
   videos: ["동영상", "영상", "비디오"],
   photos_only: ["사진만", "이미지만"],
   status: ["얼마나", "진행", "몇장", "몇 장", "상태", "현황", "어디까지", "다됐", "끝났"],
+  view_words: ["보여", "보고", "볼래", "볼수", "볼 수", "보기", "찾아", "검색", "구경", "갤러리"],
+  server_photos_subject: ["서버사진", "서버 사진", "서버에", "올린 사진", "올라간", "백업된", "백업한 사진", "갤러리", "사진"],
   pause: ["멈춰", "중지", "그만", "정지", "취소", "스톱", "stop", "일시정지"],
   help: ["도움", "도와", "뭐할", "뭐", "어떻게", "사용법", "기능", "help", "설명"],
   thanks: ["고마", "감사", "ㄱㅅ", "thanks"],
@@ -79,6 +81,25 @@ function analyze(rawText, ctx = {}) {
       slots,
       reply: "백업할 폴더(앨범)를 골라주세요. 여러 개 선택할 수 있고, 언제든 바꿀 수 있어요.",
       action: { type: "pick_albums" },
+    };
+  }
+
+  // 1.7) 서버 사진 보기 — 폰 브라우저로 서버의 검색·타임라인 UI를 그대로 연다.
+  //      connect("서버"), backup_now("올려")가 가로채지 않게 그보다 먼저 검사.
+  if (has(text, "view_words") && has(text, "server_photos_subject")) {
+    if (!ctx.connected) {
+      return {
+        intent: "server_photos",
+        slots,
+        reply: "서버 사진을 보려면 먼저 연결이 필요해요. PC 화면의 QR을 찍거나 서버 주소를 알려주세요.",
+        action: { type: "open_qr_scanner" },
+      };
+    }
+    return {
+      intent: "server_photos",
+      slots,
+      reply: "서버에 백업된 사진을 열어드릴게요! 브라우저에서 PC와 똑같이 자연어 검색·타임라인·앨범을 쓸 수 있어요.",
+      action: { type: "open_server_photos" },
     };
   }
 
@@ -176,7 +197,7 @@ function analyze(rawText, ctx = {}) {
       intent: "help",
       slots,
       reply:
-        "이렇게 말씀하시면 돼요:\n• “서버 연결해줘” 또는 주소 입력\n• “백업 시작” / “최근 사진만 올려줘”\n• “와이파이에서 자동으로 올려줘”\n• “얼마나 했어?” / “멈춰”\n사진은 원본 그대로(위치정보 포함) 회원님 서버로만 전송돼요.",
+        "이렇게 말씀하시면 돼요:\n• “서버 연결해줘” 또는 주소 입력\n• “백업 시작” / “최근 사진만 올려줘”\n• “와이파이에서 자동으로 올려줘”\n• “서버 사진 보기” — 백업된 사진을 폰에서 검색·구경\n• “얼마나 했어?” / “멈춰”\n사진은 원본 그대로(위치정보 포함) 회원님 서버로만 전송돼요.",
       action: { type: "show_help" },
     };
   }

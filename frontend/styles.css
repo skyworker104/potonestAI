@@ -400,17 +400,19 @@ body.chat-hidden #chat-panel { display: none; }
 #lb-prev:hover, #lb-next:hover { background: rgba(255,255,255,.2); }
 
 /* ---------- 슬라이드쇼 ---------- */
-#slideshow {
-  position: fixed; inset: 0; background: #000; z-index: 2000;
-  display: flex; align-items: center; justify-content: center;
-}
+#slideshow { position: fixed; inset: 0; background: #000; z-index: 2000; }
 #slideshow[hidden] { display: none; }
-#ss-img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.kenburns { animation: kb 4.5s ease-in-out; }
+/* 두 이미지를 겹쳐 두고 opacity 전환으로 크로스페이드 — 끊김 없는 전환 */
+#ss-img, #ss-img-b {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; opacity: 0; transition: opacity .9s ease;
+}
+#ss-img.show, #ss-img-b.show { opacity: 1; }
+/* 켄번즈는 페이드와 분리(확대만) — opacity는 transition이 담당 */
+.kenburns { animation: kb 5s ease-in-out forwards; }
 @keyframes kb {
-  0% { opacity: 0; transform: scale(1); }
-  8% { opacity: 1; }
-  100% { opacity: 1; transform: scale(1.05); }
+  0% { transform: scale(1); }
+  100% { transform: scale(1.06); }
 }
 #ss-controls {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);

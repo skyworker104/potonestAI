@@ -26,6 +26,11 @@ const cases = [
   ["멈춰", "pause", { connected: true, backing: true }],
   ["그만해", "pause", {}],
   ["최근 30장만", "set_scope", { connected: true }],
+  ["서버 사진 보기", "server_photos", { connected: true }],
+  ["서버에 올린 사진 보여줘", "server_photos", { connected: true }], // '올려'가 백업으로 새면 안 됨
+  ["백업된 사진 구경할래", "server_photos", { connected: true }],
+  ["서버 사진 보고 싶어", "server_photos", { connected: false }],   // 미연결 → 연결 유도
+  ["최근 사진만 올려줘", "backup_now", { connected: true }],        // 회귀: 백업이 가로채이면 안 됨
   ["도움말", "help", {}],
   ["뭐 할 수 있어?", "help", {}],
   ["고마워", "thanks", {}],

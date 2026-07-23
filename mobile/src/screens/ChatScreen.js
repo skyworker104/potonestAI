@@ -2,10 +2,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator,
+  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Linking,
 } from "react-native";
 import * as MediaLibrary from "expo-media-library";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 
 import { analyze } from "../lib/assistant";
 import { checkServer } from "../lib/api";
@@ -87,6 +88,10 @@ export default function ChatScreen() {
         return;
       case "pick_albums":
         return openAlbumPicker();
+      case "open_server_photos":
+        // 서버 웹앱(모바일 반응형)을 폰 브라우저로 — PC와 동일한 검색·타임라인·앨범
+        if (cfg?.serverUrl) Linking.openURL(cfg.serverUrl).catch(() => {});
+        return;
       default:
         return;
     }
@@ -158,6 +163,10 @@ export default function ChatScreen() {
       return;
     }
     setBusy(true); setProgress({ done: 0, total: 0, saved: 0, duplicate: 0, error: 0 });
+    // 업로드 중 화면 꺼짐 방지 — 절전으로 앱이 백그라운드 전환되며 업로드가
+    // 끊기는 것을 막는다 (다른 앱으로 전환해도 OS가 잠시 이어 돌리고,
+    // 중단된 분량은 다음 백업/자동백업이 중복 없이 이어서 올린다)
+    try { await activateKeepAwakeAsync("backup"); } catch {}
     try {
       const stat = await runBackup(
         { scope: action.range ? { range: action.range, count: action.count } : cfg.scope, media: action.media },
@@ -167,6 +176,7 @@ export default function ChatScreen() {
     } catch (e) {
       addAI("백업 중 문제가 생겼어요: " + (e.message || "알 수 없는 오류"));
     } finally {
+      try { deactivateKeepAwake("backup"); } catch {}
       setBusy(false);
     }
   }
@@ -268,7 +278,7 @@ export default function ChatScreen() {
       </ScrollView>
 
       <View style={s.quick}>
-        {["백업 시작", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "도움말"].map((q) => (
+        {["백업 시작", "서버 사진 보기", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "도움말"].map((q) => (
           <TouchableOpacity key={q} style={s.chip} onPress={() => (q === "QR 스캔" ? openScanner() : handle(q))}>
             <Text style={s.chipText}>{q}</Text>
           </TouchableOpacity>

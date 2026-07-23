@@ -272,15 +272,30 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && !$("#slideshow").hidden) acquireWakeLock();
 });
 
+let ssActive = 0;    // 현재 앞에 보이는 이미지 (0: #ss-img, 1: #ss-img-b)
+let ssLoadToken = 0; // 빠른 이전/다음 연타 시 늦게 로드된 이미지가 덮어쓰는 것 방지
+
 function ssShow(i) {
   const items = state.currentItems.filter((it) => it.type === "image");
   if (!items.length) return;
   ssIndex = ((i % items.length) + items.length) % items.length;
-  const img = $("#ss-img");
-  img.classList.remove("kenburns");
-  void img.offsetWidth; // 애니메이션 재시작
-  img.src = `/media/${encodeURIComponent(items[ssIndex].path)}`;
-  img.classList.add("kenburns");
+  const url = `/media/${encodeURIComponent(items[ssIndex].path)}`;
+  const token = ++ssLoadToken;
+  // 미리 로드한 뒤에 페이드 시작 — 로딩 중 검은 화면/깜빡임 없이 부드럽게 전환
+  const pre = new Image();
+  pre.onload = () => {
+    if (token !== ssLoadToken) return; // 더 최신 전환 요청이 있으면 무시
+    const imgs = [$("#ss-img"), $("#ss-img-b")];
+    const next = imgs[1 - ssActive];
+    const cur = imgs[ssActive];
+    next.src = url;
+    next.classList.remove("kenburns", "show");
+    void next.offsetWidth; // 켄번즈 애니메이션 재시작
+    next.classList.add("kenburns", "show");
+    cur.classList.remove("show");
+    ssActive = 1 - ssActive;
+  };
+  pre.src = url;
 }
 
 function startSlideshow(fromIndex = 0) {
@@ -290,6 +305,12 @@ function startSlideshow(fromIndex = 0) {
   $("#slideshow").hidden = false;
   ssPaused = false;
   $("#ss-pause").textContent = "⏸";
+  // 이전 세션의 사진이 잠깐 비치지 않도록 두 레이어 초기화
+  [$("#ss-img"), $("#ss-img-b")].forEach((im) => {
+    im.classList.remove("show", "kenburns");
+    im.removeAttribute("src");
+  });
+  ssActive = 0;
   ssShow(Math.max(fromIndex, 0));
   clearInterval(ssTimer);
   ssTimer = setInterval(() => { if (!ssPaused) ssShow(ssIndex + 1); }, 4000);
@@ -303,6 +324,7 @@ function stopSlideshow() {
   $("#slideshow").hidden = true;
   clearInterval(ssTimer);
   ssTimer = null;
+  ssLoadToken++; // 로딩 중이던 전환 무효화
   releaseWakeLock();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }

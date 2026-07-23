@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-<link rel="stylesheet" href="styles.css?v=22">
+<link rel="stylesheet" href="styles.css?v=23">
 </head>
 <body>
 <div id="app">
@@ -111,9 +111,10 @@
   </div>
 </div>
 
-<!-- 슬라이드쇼 -->
+<!-- 슬라이드쇼 (이미지 2장을 겹쳐 크로스페이드 전환) -->
 <div id="slideshow" hidden>
   <img id="ss-img" alt="">
+  <img id="ss-img-b" alt="">
   <div id="ss-controls">
     <button id="ss-prev">‹</button>
     <button id="ss-pause">⏸</button>
@@ -177,7 +178,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="app.js?v=22"></script>
 <script src="views.js?v=20"></script>
-<script src="lightbox.js?v=23"></script>
+<script src="lightbox.js?v=24"></script>
 <script src="voice.js?v=23"></script>
 </body>
 </html>

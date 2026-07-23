@@ -5,9 +5,11 @@ API 키는 평문 저장되므로 파일 권한을 0600으로 제한하고,
 외부로 반환할 때는 반드시 mask()로 마스킹한다.
 
 우선순위: settings.json 값 → 환경변수 폴백 → 기본값.
-  engine_mode        "auto" | "openrouter" | "local" | "claude"
+  engine_mode        "auto" | "openrouter" | "gemini" | "local" | "claude"
   openrouter_api_key  (폴백: env OPENROUTER_API_KEY)
   openrouter_model    OpenRouter 모델 id (예: anthropic/claude-3.5-haiku)
+  gemini_api_key      Google AI Studio 키 (폴백: env GEMINI_API_KEY, GOOGLE_API_KEY)
+  gemini_model        Gemini 모델 id (예: gemini-2.5-flash-lite)
 """
 import json
 import os
@@ -22,16 +24,22 @@ _LOCK = threading.Lock()
 # OpenRouter OpenAI 호환 엔드포인트
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
+# Google Gemini의 OpenAI 호환 엔드포인트 (AI Studio 키 — 무료 티어 제공)
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+
 # 검색 의도 파싱은 가볍고 빠른 모델로 충분 — UI 프리셋과 동일하게 유지
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 _DEFAULTS = {
     "engine_mode": "auto",
     "openrouter_api_key": "",
     "openrouter_model": DEFAULT_OPENROUTER_MODEL,
+    "gemini_api_key": "",
+    "gemini_model": DEFAULT_GEMINI_MODEL,
 }
 
-VALID_MODES = ("auto", "openrouter", "local", "claude")
+VALID_MODES = ("auto", "openrouter", "gemini", "local", "claude")
 
 
 def _read_file():
@@ -50,6 +58,9 @@ def load():
     # 파일에 키가 없으면 환경변수로 폴백
     if not cfg["openrouter_api_key"]:
         cfg["openrouter_api_key"] = os.environ.get("OPENROUTER_API_KEY", "")
+    if not cfg["gemini_api_key"]:
+        cfg["gemini_api_key"] = (os.environ.get("GEMINI_API_KEY", "")
+                                 or os.environ.get("GOOGLE_API_KEY", ""))
     if cfg["engine_mode"] not in VALID_MODES:
         cfg["engine_mode"] = "auto"
     return cfg
@@ -69,13 +80,17 @@ def save(patch: dict):
         if "openrouter_model" in patch:
             current["openrouter_model"] = (patch["openrouter_model"] or "").strip() \
                 or DEFAULT_OPENROUTER_MODEL
-        if "openrouter_api_key" in patch:
-            key = patch["openrouter_api_key"]
-            # None/빈 문자열이 아니고 마스킹 값이 아닐 때만 갱신
-            if key and "…" not in key and "*" not in key:
-                current["openrouter_api_key"] = key.strip()
-            elif key == "":  # 명시적 비우기
-                current["openrouter_api_key"] = ""
+        if "gemini_model" in patch:
+            current["gemini_model"] = (patch["gemini_model"] or "").strip() \
+                or DEFAULT_GEMINI_MODEL
+        for key_field in ("openrouter_api_key", "gemini_api_key"):
+            if key_field in patch:
+                key = patch[key_field]
+                # None/빈 문자열이 아니고 마스킹 값이 아닐 때만 갱신
+                if key and "…" not in key and "*" not in key:
+                    current[key_field] = key.strip()
+                elif key == "":  # 명시적 비우기
+                    current[key_field] = ""
 
         _FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(_FILE, "w", encoding="utf-8") as f:
@@ -100,9 +115,13 @@ def public(cfg=None):
     """외부 반환용 — API 키는 마스킹, 설정 여부 플래그 포함."""
     cfg = cfg or load()
     key = cfg.get("openrouter_api_key", "")
+    gkey = cfg.get("gemini_api_key", "")
     return {
         "engine_mode": cfg["engine_mode"],
         "openrouter_model": cfg["openrouter_model"],
         "openrouter_key_masked": mask_key(key),
         "openrouter_key_set": bool(key),
+        "gemini_model": cfg["gemini_model"],
+        "gemini_key_masked": mask_key(gkey),
+        "gemini_key_set": bool(gkey),
     }

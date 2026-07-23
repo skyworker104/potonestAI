@@ -27,7 +27,7 @@ _HANGUL = re.compile(r"[가-힣]")
 def _to_english(text):
     """한국어 검색 주제어 → 영어 키워드 (CLIP 텍스트 인코더가 영어 전용).
 
-    우선순위: OpenRouter 번역(품질) → 내장 KO_EN 사전 → 원문.
+    우선순위: OpenRouter 번역 → Gemini 번역 → 내장 KO_EN 사전 → 원문.
     결과는 프로세스 수명 동안 캐시한다.
     """
     if not _HANGUL.search(text):
@@ -40,6 +40,12 @@ def _to_english(text):
         en = openrouter.translate(text)
     except Exception:
         pass
+    if not en:
+        try:
+            from . import gemini
+            en = gemini.translate(text)
+        except Exception:
+            pass
     if not en:
         from . import llm
         en = llm._ko_to_en(text)

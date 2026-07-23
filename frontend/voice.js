@@ -20,7 +20,7 @@ function addMsg(text, who) {
 }
 
 const ENGINE_BADGE = {
-  "skill": "⚡ 스킬", "local-llm": "🧠 로컬 LLM",
+  "skill": "⚡ 스킬", "local-llm": "🧠 로컬 LLM", "gemini": "✨ Gemini",
   "claude": "☁️ Claude", "heuristic": "🔤 규칙", "instant": "",
 };
 

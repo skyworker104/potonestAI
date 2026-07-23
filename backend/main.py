@@ -66,11 +66,16 @@ class SettingsUpdate(BaseModel):
     engine_mode: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    gemini_model: Optional[str] = None
 
 
-class OpenRouterTest(BaseModel):
+class EngineTest(BaseModel):
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    gemini_model: Optional[str] = None
+    engine: Optional[str] = None  # "openrouter"(기본) | "gemini"
 
 
 class TakeoutAlbumApply(BaseModel):
@@ -103,10 +108,14 @@ def status():
     base, model, name = local_llm.discover()
     mode = settings.load()["engine_mode"]
 
+    from . import gemini
+
     # 설정된 모드 + 가용성으로 실제 사용될 엔진을 표기
     def _resolve_engine():
         if mode == "openrouter":
             return "openrouter" if openrouter.available() else "heuristic"
+        if mode == "gemini":
+            return "gemini" if gemini.available() else "heuristic"
         if mode == "local":
             return "local-llm" if base else "heuristic"
         if mode == "claude":
@@ -114,6 +123,8 @@ def status():
         # auto
         if openrouter.available():
             return "openrouter"
+        if gemini.available():
+            return "gemini"
         if base:
             return "local-llm"
         if os.environ.get("ANTHROPIC_API_KEY"):
@@ -122,11 +133,13 @@ def status():
 
     engine = _resolve_engine()
     from . import embedder
+    cloud_model = openrouter.config()[1] if engine == "openrouter" \
+        else gemini.config()[1] if engine == "gemini" else None
     llm_info = {
         "engine": engine,
         "engine_mode": mode,
-        "llm_name": openrouter.config()[1] if engine == "openrouter" else name,
-        "llm_model": openrouter.config()[1] if engine == "openrouter" else model,
+        "llm_name": cloud_model or name,
+        "llm_model": cloud_model or model,
         "embed_backend": embedder.name(),
     }
     ts = takeout.get_state()
@@ -141,10 +154,12 @@ def status():
 
 @app.get("/api/settings")
 def get_settings():
-    from . import openrouter, settings
+    from . import gemini, openrouter, settings
     data = settings.public()
     data["openrouter_presets"] = openrouter.PRESET_MODELS
     data["default_model"] = settings.DEFAULT_OPENROUTER_MODEL
+    data["gemini_presets"] = gemini.PRESET_MODELS
+    data["default_gemini_model"] = settings.DEFAULT_GEMINI_MODEL
     return data
 
 
@@ -159,13 +174,18 @@ def update_settings(patch: SettingsUpdate):
 
 
 @app.post("/api/settings/test")
-def test_settings(body: OpenRouterTest):
-    from . import openrouter, settings
-    key = body.openrouter_api_key
-    # 마스킹 값이거나 비어있으면 저장된 키로 검증
-    if not key or "…" in key or "*" in key:
-        key = settings.load().get("openrouter_api_key", "")
-    ok, message = openrouter.test_key(key, body.openrouter_model)
+def test_settings(body: EngineTest):
+    from . import gemini, openrouter, settings
+    if body.engine == "gemini":
+        key = body.gemini_api_key
+        if not key or "…" in key or "*" in key:  # 마스킹/공백 → 저장된 키로 검증
+            key = settings.load().get("gemini_api_key", "")
+        ok, message = gemini.test_key(key, body.gemini_model)
+    else:
+        key = body.openrouter_api_key
+        if not key or "…" in key or "*" in key:
+            key = settings.load().get("openrouter_api_key", "")
+        ok, message = openrouter.test_key(key, body.openrouter_model)
     return {"ok": ok, "message": message}
 
 
@@ -478,7 +498,7 @@ def chat(req: ChatRequest):
             # LLM류 엔진의 해석은 스킬로 학습 — place_text도 함께 캐싱해
             # 재사용 시 지명이 의미검색으로 새지 않게 한다.
             # 정제 조각("~것만" 등)은 재사용 가치가 없어 저장하지 않는다.
-            if base_ids is None and engine in ("local-llm", "claude", "openrouter") \
+            if base_ids is None and engine in ("local-llm", "claude", "openrouter", "gemini") \
                     and (search_text or place_text):
                 sk = skills.add(target, search_text, parsed.get("media_type"),
                                 place_text=place_text)

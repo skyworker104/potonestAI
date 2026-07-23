@@ -44,6 +44,7 @@ async function pollStatus() {
       const engineLabel = s.engine === "local-llm"
         ? ` · 🧠 ${s.llm_name || "로컬 LLM"}`
         : s.engine === "openrouter" ? ` · 🌐 ${s.llm_model || "OpenRouter"}`
+        : s.engine === "gemini" ? ` · ✨ ${s.llm_model || "Gemini"}`
         : s.engine === "claude" ? " · ☁️ Claude" : "";
       // 임베딩 backfill 진행 (메모리 인식 스로틀 — 천천히 채워짐)
       const embedTotal = (s.embed_done || 0) + (s.embed_pending || 0);
@@ -345,15 +346,17 @@ $("#album-modal-close").onclick = () => ($("#album-modal").hidden = true);
 /* ---------------- 설정 (AI 엔진 / OpenRouter) ---------------- */
 function syncSettingsUI() {
   const mode = ($("input[name=engine_mode]:checked") || {}).value;
-  // OpenRouter 필드는 auto/openrouter일 때만 강조(항상 편집은 가능)
+  // 키 입력 필드는 해당 엔진(또는 자동)일 때만 강조(항상 편집은 가능)
   $("#openrouter-fields").classList.toggle("dimmed", !(mode === "auto" || mode === "openrouter"));
+  $("#gemini-fields").classList.toggle("dimmed", !(mode === "auto" || mode === "gemini"));
 }
 
 async function openSettings() {
   const s = await api.get("/api/settings");
   // 프리셋 datalist 채우기
-  const dl = $("#or-model-presets");
-  dl.innerHTML = (s.openrouter_presets || [])
+  $("#or-model-presets").innerHTML = (s.openrouter_presets || [])
+    .map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
+  $("#gm-model-presets").innerHTML = (s.gemini_presets || [])
     .map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
   // 엔진 라디오
   const radio = $(`input[name=engine_mode][value="${s.engine_mode}"]`);
@@ -363,6 +366,10 @@ async function openSettings() {
   $("#or-key").placeholder = s.openrouter_key_set ? s.openrouter_key_masked : "sk-or-v1-...";
   $("#or-model").value = s.openrouter_model || s.default_model || "";
   $("#or-test-status").textContent = "";
+  $("#gm-key").value = "";
+  $("#gm-key").placeholder = s.gemini_key_set ? s.gemini_key_masked : "AIza...";
+  $("#gm-model").value = s.gemini_model || s.default_gemini_model || "";
+  $("#gm-test-status").textContent = "";
   syncSettingsUI();
   $("#settings-modal").hidden = false;
 }
@@ -383,13 +390,29 @@ $("#or-test").onclick = async () => {
   status.textContent = r.message || (r.ok ? "성공" : "실패");
 };
 
+$("#gm-test").onclick = async () => {
+  const status = $("#gm-test-status");
+  status.className = "";
+  status.textContent = "테스트 중…";
+  const r = await api.post("/api/settings/test", {
+    engine: "gemini",
+    gemini_api_key: $("#gm-key").value || undefined,
+    gemini_model: $("#gm-model").value || undefined,
+  });
+  status.className = r.ok ? "ok" : "err";
+  status.textContent = r.message || (r.ok ? "성공" : "실패");
+};
+
 $("#settings-save").onclick = async () => {
   const patch = {
     engine_mode: ($("input[name=engine_mode]:checked") || {}).value,
     openrouter_model: $("#or-model").value.trim() || undefined,
+    gemini_model: $("#gm-model").value.trim() || undefined,
   };
   const key = $("#or-key").value.trim();
   if (key) patch.openrouter_api_key = key; // 비어있으면 기존 키 유지
+  const gkey = $("#gm-key").value.trim();
+  if (gkey) patch.gemini_api_key = gkey;
   const r = await api.post("/api/settings", patch);
   if (r.error) { $("#or-test-status").className = "err"; $("#or-test-status").textContent = r.error; return; }
   $("#settings-modal").hidden = true;

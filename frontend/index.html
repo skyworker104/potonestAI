@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-<link rel="stylesheet" href="styles.css?v=23">
+<link rel="stylesheet" href="styles.css?v=24">
 </head>
 <body>
 <div id="app">
@@ -132,8 +132,9 @@
     <div class="settings-group">
       <label class="settings-label">엔진 선택</label>
       <div id="engine-options">
-        <label class="engine-opt"><input type="radio" name="engine_mode" value="auto"><span><b>자동</b> — OpenRouter(키 있으면) → 로컬 → Claude → 기본</span></label>
+        <label class="engine-opt"><input type="radio" name="engine_mode" value="auto"><span><b>자동</b> — OpenRouter → Gemini → 로컬 → Claude → 기본 (키 있는 것 순)</span></label>
         <label class="engine-opt"><input type="radio" name="engine_mode" value="openrouter"><span><b>OpenRouter</b> — 클라우드 모델(키 필요)</span></label>
+        <label class="engine-opt"><input type="radio" name="engine_mode" value="gemini"><span><b>Gemini</b> — Google 직접 연결(무료 티어)</span></label>
         <label class="engine-opt"><input type="radio" name="engine_mode" value="local"><span><b>로컬 LLM</b> — LM Studio / Ollama 자동탐지</span></label>
         <label class="engine-opt"><input type="radio" name="engine_mode" value="claude"><span><b>Claude</b> — ANTHROPIC_API_KEY 사용</span></label>
       </div>
@@ -150,6 +151,20 @@
       <div class="settings-row">
         <button id="or-test" class="btn-secondary">연결 테스트</button>
         <span id="or-test-status"></span>
+      </div>
+    </div>
+
+    <div class="settings-group" id="gemini-fields">
+      <label class="settings-label">Gemini API 키 (Google AI Studio)
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">키 발급(무료) ↗</a>
+      </label>
+      <input id="gm-key" type="password" placeholder="AIza..." autocomplete="off">
+      <label class="settings-label">모델</label>
+      <input id="gm-model" type="text" list="gm-model-presets" placeholder="예: gemini-2.5-flash-lite" autocomplete="off">
+      <datalist id="gm-model-presets"></datalist>
+      <div class="settings-row">
+        <button id="gm-test" class="btn-secondary">연결 테스트</button>
+        <span id="gm-test-status"></span>
       </div>
     </div>
 
@@ -176,9 +191,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="app.js?v=22"></script>
+<script src="app.js?v=23"></script>
 <script src="views.js?v=20"></script>
 <script src="lightbox.js?v=25"></script>
-<script src="voice.js?v=23"></script>
+<script src="voice.js?v=24"></script>
 </body>
 </html>

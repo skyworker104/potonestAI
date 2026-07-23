@@ -366,6 +366,21 @@ def _try_openrouter(message, history, today):
     return None
 
 
+def _try_gemini(message, history, today):
+    from . import gemini
+    if not gemini.available():
+        return None
+    try:
+        result = gemini.parse(message, history=history, today=today)
+        if result and "intent" in result:
+            out = _normalize(result)
+            out["engine"] = "gemini"
+            return out
+    except Exception:
+        pass
+    return None
+
+
 def _try_local(message, history, today):
     from . import local_llm
     if not local_llm.available():
@@ -399,8 +414,9 @@ def parse(message: str, history=None):
     """발화 → 의도 구조체.
 
     설정(engine_mode)에 따라 엔진을 선택한다:
-      auto       → OpenRouter(키 有) → 로컬 → Claude → 휴리스틱
+      auto       → OpenRouter(키 有) → Gemini(키 有) → 로컬 → Claude → 휴리스틱
       openrouter → OpenRouter → 휴리스틱
+      gemini     → Gemini → 휴리스틱
       local      → 로컬 → 휴리스틱
       claude     → Claude → 휴리스틱
     어떤 엔진도 실패하면 항상 휴리스틱으로 폴백한다(검색은 CLIP이 직접 처리).
@@ -414,11 +430,14 @@ def parse(message: str, history=None):
     if mode == "auto":
         chain = (
             lambda: _try_openrouter(message, history, today),
+            lambda: _try_gemini(message, history, today),
             lambda: _try_local(message, history, today),
             lambda: _try_claude(message),
         )
     elif mode == "openrouter":
         chain = (lambda: _try_openrouter(message, history, today),)
+    elif mode == "gemini":
+        chain = (lambda: _try_gemini(message, history, today),)
     elif mode == "local":
         chain = (lambda: _try_local(message, history, today),)
     elif mode == "claude":

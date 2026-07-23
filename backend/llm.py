@@ -251,6 +251,28 @@ def _fallback_parse(message: str):
     }
 
 
+# 직전 검색 결과를 좁히는 정제 지시어 — "그 중에서 밤에 찍은 것만".
+# 음성인식 변형("그중에"/"그 중에서")을 흡수하도록 공백을 유연하게 매칭.
+_REFINE = re.compile(
+    r"(그\s*중에서|그\s*중에|그\s*중|거기\s*에서|거기서|여기서"
+    r"|이\s*중에서|이\s*중에|이것들\s*중에서?|얘네\s*중에서?|검색\s*결과에서)\s*"
+)
+
+
+def detect_refine(message):
+    """정제 지시어가 있으면 그것을 제거한 나머지 텍스트를 반환. 없으면 None.
+
+    "그 중에서 밤에 찍은 것만" → "밤에 찍은 것만"
+    "그 중에서" (나머지 없음) → "" — 호출부가 무엇으로 좁힐지 되묻는다.
+    호출부는 직전 검색 결과가 있을 때만 정제로 처리해야 한다.
+    """
+    m = _REFINE.search(message)
+    if not m:
+        return None
+    remainder = (message[:m.start()] + " " + message[m.end():])
+    return re.sub(r"\s+", " ", remainder).strip()
+
+
 def detect_feedback(message):
     """검색 결과에 대한 교정 피드백 의도 감지. 없으면 None.
 

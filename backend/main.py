@@ -325,12 +325,23 @@ RELAX_PHRASES = {
 }
 
 
+def _combine_ids(base_ids, person_ids):
+    """정제 대상(직전 결과)과 인물 필터의 교집합 — 순서는 base_ids 기준 유지."""
+    if base_ids is None:
+        return person_ids
+    if person_ids is None:
+        return base_ids
+    pset = set(person_ids)
+    return [i for i in base_ids if i in pset]
+
+
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
-                hour_from=None, hour_to=None, place_text=None):
+                hour_from=None, hour_to=None, place_text=None, base_ids=None):
     from . import search_retry
 
-    only_ids = db.person_media_ids(person["id"]) if person else None
+    person_ids = db.person_media_ids(person["id"]) if person else None
+    only_ids = _combine_ids(base_ids, person_ids)
     # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체
     top_k = 60 if search_text else 1000
     plan = dict(
@@ -357,15 +368,19 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     )
 
     n = len(results)
+    refined = base_ids is not None
     loc = f"{place['name']} 지역(위치 기준)에서 " if place \
         else (f"'{place_text}'에서 " if place_text else "")
     if n == 0:
-        reply = "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
+        reply = "직전 결과 안에는 그 조건에 맞는 사진이 없어요." if refined \
+            else "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
     elif relaxed == ["nearest_time"]:
         reply = f"요청하신 시기의 사진이 없어서, 가장 가까운 시기의 사진 {n}장을 보여드릴게요."
     elif relaxed:
         how = ", ".join(RELAX_PHRASES.get(l, l) for l in relaxed)
         reply = f"조건 그대로는 없어서 {how} 다시 찾았어요. 모두 {n}장이에요."
+    elif refined:
+        reply = f"그 중에서 {n}장으로 좁혔어요."
     elif person and not search_text and not place:
         reply = f"'{person['name']}'님이 나온 사진 {n}장을 찾았어요."
     else:
@@ -390,10 +405,22 @@ def chat(req: ChatRequest):
     history = [{"role": t.role, "content": t.content} for t in (req.history or [])]
     message = req.message
 
+    # -1) "그 중에서 ~" — 직전 검색 결과 안에서 좁히기 (연쇄 정제 가능).
+    #     피드백 감지보다 먼저: "~것만 보여줘"가 피드백 'only'로 새는 것 방지.
+    base_ids = None
+    remainder = llm.detect_refine(message)
+    if remainder is not None and _last_search.get("result_ids"):
+        if not remainder:
+            return {"reply": "직전 결과에서 무엇으로 좁힐까요? 예: \"밤에 찍은 것만\", \"강아지 나온 것만\"",
+                    "intent": "chat", "engine": "instant", "results": []}
+        base_ids = _last_search["result_ids"]
+        message = remainder  # 이후 해석은 정제 조건만으로
+
     # 0) 교정 피드백이면 직전 검색을 위치 기준으로 다시
-    fb = llm.detect_feedback(message)
-    if fb and _last_search.get("query"):
-        return _handle_feedback(message, fb)
+    if base_ids is None:
+        fb = llm.detect_feedback(message)
+        if fb and _last_search.get("query"):
+            return _handle_feedback(message, fb)
 
     meta = llm.quick_meta(message)
     if meta["greeting"]:
@@ -429,7 +456,9 @@ def chat(req: ChatRequest):
             skills.record_use(skill["id"])
         else:
             parsed = llm.parse(target, history=history)
-            if parsed.get("intent") == "chat" and not place:
+            # 정제 모드에서는 잡담 판정이어도 중단하지 않는다 —
+            # "동영상만" 같은 순수 필터 발화는 quick_meta 필터만으로 좁힌다
+            if parsed.get("intent") == "chat" and not place and base_ids is None:
                 return {"reply": parsed.get("reply") or "무엇을 도와드릴까요?",
                         "intent": "chat", "engine": parsed.get("engine"), "results": []}
             search_text = parsed.get("search_text")
@@ -441,8 +470,10 @@ def chat(req: ChatRequest):
                 person = db.match_person_name(parsed["person"])
             engine = parsed.get("engine")
             # LLM류 엔진의 해석은 스킬로 학습 — place_text도 함께 캐싱해
-            # 재사용 시 지명이 의미검색으로 새지 않게 한다
-            if engine in ("local-llm", "claude", "openrouter") and (search_text or place_text):
+            # 재사용 시 지명이 의미검색으로 새지 않게 한다.
+            # 정제 조각("~것만" 등)은 재사용 가치가 없어 저장하지 않는다.
+            if base_ids is None and engine in ("local-llm", "claude", "openrouter") \
+                    and (search_text or place_text):
                 sk = skills.add(target, search_text, parsed.get("media_type"),
                                 place_text=place_text)
                 if sk:
@@ -459,6 +490,7 @@ def chat(req: ChatRequest):
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
+        base_ids=base_ids,
     )
 
 

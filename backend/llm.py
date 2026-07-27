@@ -160,7 +160,7 @@ def _parse_date_phrase(msg):
         key = "올해" if "올해" in msg else "금년"
         return f"{now.year}-01-01", None, key
     if "지난달" in msg or "지난 달" in msg:
-        first = now.replace(day=1)
+        first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         prev_end = first - timedelta(seconds=1)
         return (prev_end.replace(day=1).strftime("%Y-%m-%d"),
                 prev_end.isoformat(), "지난달" if "지난달" in msg else "지난 달")
@@ -236,18 +236,23 @@ def _fallback_parse(message: str):
     )
     if date_span:
         clean = clean.replace(date_span, " ")
-    clean = re.sub(r"\s+", " ", clean).strip() or msg
+    clean = re.sub(r"\s+", " ", clean).strip()
+    # 날짜/유형 필터가 잡힌 발화에서 내용어가 안 남으면 필터만으로 검색
+    # (원문을 되살리면 "지난달 사진 보여줘" 문장 전체가 CLIP에 들어간다)
+    if not clean and not (date_from or date_to or media_type):
+        clean = msg
 
     # CLIP 검색 품질을 위해 가능하면 영어 키워드로 변환
-    translated = _ko_to_en(clean)
+    translated = _ko_to_en(clean) if clean else None
 
+    label = clean or date_span or msg
     return {
         "intent": "search",
-        "search_text": translated or clean,
+        "search_text": (translated or clean) or None,
         "date_from": date_from,
         "date_to": date_to,
         "media_type": media_type,
-        "reply": f"'{clean}' 관련 {'영상' if media_type == 'video' else '사진'}을 찾아볼게요.",
+        "reply": f"'{label}' 관련 {'영상' if media_type == 'video' else '사진'}을 찾아볼게요.",
     }
 
 

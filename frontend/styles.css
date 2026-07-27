@@ -330,6 +330,51 @@ body.chat-hidden #chat-panel { display: none; }
 .phone-url { display: block; text-align: center; padding: 8px !important; font-size: 15px !important; }
 #qr-box { display: flex; justify-content: center; padding: 14px; background: #fff; border-radius: 12px; align-self: center; }
 
+/* ---------- 저장소·백업 ---------- */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.stat-tile {
+  background: var(--panel2); border-radius: 10px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.stat-tile .stat-label { font-size: 12px; color: var(--muted); }
+.stat-tile .stat-num { font-size: 18px; font-weight: 700; }
+.stat-tile .stat-sub { font-size: 12.5px; color: var(--accent); }
+.disk-bar {
+  height: 12px; background: var(--panel2); border-radius: 6px; overflow: hidden;
+}
+.disk-used {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  transition: width .4s;
+}
+.disk-used.warn { background: linear-gradient(90deg, #f5c542, #ff5c7a); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn-row select {
+  flex: 1; min-width: 160px; background: var(--panel2); color: var(--text);
+  border: 1px solid #2c3245; border-radius: 9px; padding: 9px 10px; font-size: 13.5px;
+}
+.pn-btn {
+  background: var(--panel2); color: var(--text); border: 1px solid #2c3245;
+  border-radius: 9px; padding: 9px 14px; font-size: 13.5px; cursor: pointer;
+}
+.pn-btn:hover { border-color: var(--accent); }
+.pn-btn:disabled { opacity: .45; cursor: default; }
+.pn-btn.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border: none; color: #fff; font-weight: 600;
+}
+.pn-progress {
+  height: 10px; background: var(--panel2); border-radius: 6px; overflow: hidden;
+}
+.pn-progress-bar {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--accent), #2dd4a0);
+  transition: width .25s;
+}
+
 /* ---------- 라이트박스 ---------- */
 #lightbox {
   position: fixed; inset: 0; background: rgba(8,9,14,.94); z-index: 1000;

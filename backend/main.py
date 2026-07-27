@@ -9,13 +9,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, indexer, llm, search, upload
+from . import db, indexer, llm, search, storage, upload
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(title="PhotoNest AI")
 app.include_router(upload.router)
+app.include_router(storage.router)
 
 
 @app.get("/upload")

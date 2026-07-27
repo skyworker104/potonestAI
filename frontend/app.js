@@ -69,7 +69,7 @@ async function pollStatus() {
 const VIEW_TITLES = {
   photos: "사진", map: "지도", albums: "앨범", favorites: "즐겨찾기",
   trash: "휴지통", duplicates: "중복 정리", search: "검색 결과", albumDetail: "앨범",
-  people: "인물", personDetail: "인물", phone: "폰 연결",
+  people: "인물", personDetail: "인물", phone: "폰 연결", storage: "저장소·백업",
 };
 
 function switchView(view, opts = {}) {

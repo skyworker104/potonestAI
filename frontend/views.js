@@ -498,6 +498,209 @@ async function renderTakeoutAlbums() {
   } catch (_) { /* 무시 */ }
 }
 
+/* ---------------- 저장소·백업 ---------------- */
+const MEDIA_EXTS = new Set([
+  "jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif",
+  "mp4", "mov", "avi", "mkv", "webm",
+]);
+
+function fmtBytes(n) {
+  if (n == null) return "-";
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "GB";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + "MB";
+  return Math.max(1, Math.round(n / 1e3)) + "KB";
+}
+
+views.storage = async () => {
+  const c = $("#content");
+  c.innerHTML = `
+  <div class="phone-wrap">
+    <section class="phone-card">
+      <h3>📊 보관 통계</h3>
+      <div class="stat-grid" id="st-grid"><span class="loading-ph">계산 중…</span></div>
+      <div class="disk-bar"><div class="disk-used" id="st-disk-bar"></div></div>
+      <p class="small" id="st-disk-text"></p>
+    </section>
+    <section class="phone-card">
+      <h3>📤 PC 폴더 업로드</h3>
+      <p>PC의 사진 폴더를 선택하면 하위 폴더까지 포함해 <strong>원본 그대로(화질·촬영정보·GPS 무손실)</strong>
+      서버로 복사되고 자동으로 색인됩니다. 이미 서버에 있는 사진(중복)은 건너뜁니다.</p>
+      <div class="btn-row">
+        <button class="pn-btn primary" id="pc-pick-folder">📁 폴더 선택해서 올리기</button>
+        <button class="pn-btn" id="pc-pick-files">🖼️ 파일 골라서 올리기</button>
+      </div>
+      <input type="file" id="pc-folder-input" webkitdirectory multiple hidden>
+      <input type="file" id="pc-file-input" multiple accept="image/*,video/*" hidden>
+      <div id="pc-summary" class="small"></div>
+      <div class="pn-progress" id="pc-progress" hidden><div class="pn-progress-bar" id="pc-progress-bar"></div></div>
+      <p class="small">저장 위치: <code>photos/MobileBackup/PC/…</code> (선택한 폴더 구조 유지)</p>
+    </section>
+    <section class="phone-card">
+      <h3>🔌 USB 백업</h3>
+      <p>USB를 꽂고 🔄 새로고침 후 드라이브를 골라 백업하세요. 사진 라이브러리 전체와
+      색인 DB(앨범·인물·즐겨찾기 포함)를 복사하며, <strong>다시 실행하면 바뀐 파일만</strong> 증분 복사합니다.</p>
+      <div class="btn-row">
+        <select id="usb-target"></select>
+        <button class="pn-btn" id="usb-refresh" title="드라이브 다시 찾기">🔄</button>
+        <button class="pn-btn primary" id="usb-start">💾 백업 시작</button>
+        <button class="pn-btn" id="usb-cancel" hidden>⏹ 중지</button>
+      </div>
+      <div id="usb-status" class="small"></div>
+      <div class="pn-progress" id="usb-progress" hidden><div class="pn-progress-bar" id="usb-progress-bar"></div></div>
+    </section>
+  </div>`;
+
+  renderStorageStats();
+  wirePcUpload();
+  wireUsbBackup();
+};
+
+async function renderStorageStats() {
+  try {
+    const s = await api.get("/api/storage/stats");
+    const total = s.photos.count + s.videos.count;
+    const tiles = [
+      ["🖼️ 사진", `${s.photos.count.toLocaleString()}장`, fmtBytes(s.photos.bytes)],
+      ["🎬 동영상", `${s.videos.count.toLocaleString()}개`, fmtBytes(s.videos.bytes)],
+      ["📦 전체", `${total.toLocaleString()}개`, fmtBytes(s.photos.bytes + s.videos.bytes)],
+      ["🗑️ 휴지통", `${s.trash.count.toLocaleString()}개`, fmtBytes(s.trash.bytes)],
+      ["🧠 앱 데이터", "썸네일·색인", fmtBytes(s.data_bytes)],
+    ];
+    $("#st-grid").innerHTML = tiles.map(([label, num, sub]) =>
+      `<div class="stat-tile"><span class="stat-label">${label}</span>
+       <span class="stat-num">${num}</span><span class="stat-sub">${sub}</span></div>`).join("");
+    const pct = s.disk.total ? (s.disk.used / s.disk.total * 100) : 0;
+    $("#st-disk-bar").style.width = pct.toFixed(1) + "%";
+    $("#st-disk-bar").classList.toggle("warn", pct >= 90);
+    $("#st-disk-text").textContent =
+      `라이브러리 드라이브: 전체 ${fmtBytes(s.disk.total)} 중 ${fmtBytes(s.disk.used)} 사용 (${pct.toFixed(0)}%) · 가용 ${fmtBytes(s.disk.free)}`;
+  } catch (_) {
+    $("#st-grid").innerHTML = `<span class="small">통계를 불러오지 못했습니다</span>`;
+  }
+}
+
+function wirePcUpload() {
+  $("#pc-pick-folder").onclick = () => $("#pc-folder-input").click();
+  $("#pc-pick-files").onclick = () => $("#pc-file-input").click();
+  $("#pc-folder-input").onchange = (e) => uploadPcFiles([...e.target.files], e.target);
+  $("#pc-file-input").onchange = (e) => uploadPcFiles([...e.target.files], e.target);
+}
+
+async function uploadPcFiles(all, inputEl) {
+  inputEl.value = "";
+  const files = all.filter((f) =>
+    MEDIA_EXTS.has((f.name.split(".").pop() || "").toLowerCase()));
+  const ignored = all.length - files.length;
+  if (!files.length) {
+    $("#pc-summary").textContent = "선택한 항목에 사진·동영상이 없습니다.";
+    return;
+  }
+  $("#pc-pick-folder").disabled = $("#pc-pick-files").disabled = true;
+  $("#pc-progress").hidden = false;
+
+  let done = 0, saved = 0, dup = 0, err = 0;
+  const update = () => {
+    $("#pc-progress-bar").style.width = (done / files.length * 100) + "%";
+    $("#pc-summary").innerHTML =
+      `<strong>${done}/${files.length}</strong> 완료 · 저장 ${saved} · 중복 ${dup}` +
+      (err ? ` · <span style="color:#ff5c7a">실패 ${err}</span>` : "") +
+      (ignored ? ` · 미디어 아닌 파일 ${ignored}개 제외` : "");
+  };
+  update();
+
+  const queue = [...files];
+  async function worker() {
+    while (queue.length) {
+      const f = queue.shift();
+      try {
+        const fd = new FormData();
+        fd.append("files", f, f.name);
+        fd.append("device", "PC");
+        // 폴더 선택 시 하위 폴더 구조 보존 (파일 선택은 바로 아래에 저장)
+        const rel = f.webkitRelativePath || "";
+        const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+        if (dir) fd.append("subdir", dir);
+        fd.append("meta", JSON.stringify({ [f.name]: f.lastModified }));
+        const r = await fetch("/api/upload", { method: "POST", body: fd });
+        const data = await r.json();
+        const st = (data.results && data.results[0] && data.results[0].status) || "error";
+        if (st === "saved") saved++;
+        else if (st === "duplicate") dup++;
+        else err++;
+      } catch (_) { err++; }
+      done++;
+      update();
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  $("#pc-summary").innerHTML += " — 완료! 새 사진은 자동으로 색인됩니다.";
+  $("#pc-pick-folder").disabled = $("#pc-pick-files").disabled = false;
+  renderStorageStats();
+}
+
+function wireUsbBackup() {
+  const sel = $("#usb-target");
+  const loadTargets = async () => {
+    const { targets } = await api.get("/api/backup/targets");
+    sel.innerHTML = targets.length
+      ? targets.map((t) =>
+          `<option value="${t.path}"${t.writable ? "" : " disabled"}>` +
+          `${t.name} — 남은 공간 ${fmtBytes(t.free)}${t.writable ? "" : " (쓰기 불가)"}</option>`).join("")
+      : `<option value="">USB가 감지되지 않았습니다</option>`;
+    $("#usb-start").disabled = !targets.some((t) => t.writable);
+  };
+  loadTargets();
+  $("#usb-refresh").onclick = loadTargets;
+
+  $("#usb-start").onclick = async () => {
+    if (!sel.value) return;
+    const r = await api.post("/api/backup/start", { path: sel.value });
+    if (!r.ok) { $("#usb-status").textContent = "⚠️ " + r.error; return; }
+    pollBackup();
+  };
+  $("#usb-cancel").onclick = () => api.post("/api/backup/cancel");
+
+  // 뷰 진입 시 이미 진행 중이던 백업이 있으면 이어서 표시
+  api.get("/api/backup/status").then((s) => {
+    if (s.state === "preparing" || s.state === "running") pollBackup();
+  }).catch(() => {});
+}
+
+async function pollBackup() {
+  if (state.view !== "storage") return; // 다른 화면으로 이동하면 폴링 중단
+  let s;
+  try { s = await api.get("/api/backup/status"); } catch (_) { return; }
+  const running = s.state === "preparing" || s.state === "running";
+  $("#usb-start").disabled = running;
+  $("#usb-cancel").hidden = !running;
+  $("#usb-progress").hidden = !running && s.state !== "done";
+
+  if (s.state === "preparing") {
+    $("#usb-status").textContent = "백업 준비 중… (바뀐 파일 확인)";
+  } else if (s.state === "running") {
+    const pct = s.total_bytes ? (s.done_bytes / s.total_bytes * 100) : 0;
+    $("#usb-progress-bar").style.width = pct.toFixed(1) + "%";
+    $("#usb-status").textContent =
+      `복사 중 ${fmtBytes(s.done_bytes)}/${fmtBytes(s.total_bytes)} · ` +
+      `새로 복사 ${s.copied} · 이미 최신 ${s.skipped}` +
+      (s.failed ? ` · 실패 ${s.failed}` : "") +
+      (s.current ? ` — ${s.current}` : "");
+  } else if (s.state === "done") {
+    $("#usb-progress-bar").style.width = "100%";
+    $("#usb-status").textContent =
+      `✅ 백업 완료 — 새로 복사 ${s.copied}개 · 이미 최신 ${s.skipped}개` +
+      (s.failed ? ` · 실패 ${s.failed}개` : "") + ` → ${s.dest}/PhotoNestBackup`;
+    return;
+  } else if (s.state === "cancelled") {
+    $("#usb-status").textContent = "⏹ 백업을 중지했습니다. 다시 시작하면 이어서 복사됩니다.";
+    return;
+  } else if (s.state === "error") {
+    $("#usb-status").textContent = "⚠️ " + (s.error || "백업 실패");
+    return;
+  } else return;
+  setTimeout(pollBackup, 1000);
+}
+
 async function cleanAllDuplicates() {
   const { groups } = await api.get("/api/duplicates");
   if (!groups.length) { speak("정리할 중복 사진이 없어요."); return; }

@@ -82,6 +82,18 @@ def forget_hash(hash_):
     _recent_hashes.discard(hash_)
 
 
+def _safe_subdir(subdir: str):
+    """업로드가 지정한 상대 하위경로 정리 — 경로 탈출·숨김·특수문자 제거."""
+    parts = []
+    for part in Path(subdir.replace("\\", "/")).parts:
+        if part in ("..", "/", "~") or part.startswith("."):
+            continue
+        clean = "".join(ch for ch in part if ch not in '<>:"|?*').strip()
+        if clean:
+            parts.append(clean)
+    return Path(*parts) if parts else None
+
+
 def _unique_path(d: Path, name: str):
     name = Path(name).name  # 경로 조작 방지
     p = d / name
@@ -131,6 +143,7 @@ async def upload(
     files: List[UploadFile] = File(...),
     device: str = Form("phone"),
     meta: str = Form("{}"),  # {filename: lastModified(ms)} — EXIF 없는 파일 날짜 보존
+    subdir: Optional[str] = Form(None),        # PC 폴더 업로드의 하위 폴더 구조 보존
     embedding: Optional[str] = Form(None),     # 폰이 계산한 CLIP 벡터 (JSON 배열)
     embed_model: Optional[str] = Form(None),   # 벡터를 만든 모델 태그
 ):
@@ -141,6 +154,10 @@ async def upload(
     client_vec = _valid_client_vec(embedding, embed_model) if embedding else None
     device = "".join(ch for ch in device if ch.isalnum() or ch in "-_가-힣a-zA-Z") or "phone"
     dest_dir = _upload_root() / device
+    if subdir:
+        sd = _safe_subdir(subdir)
+        if sd:
+            dest_dir = dest_dir / sd
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     results = []

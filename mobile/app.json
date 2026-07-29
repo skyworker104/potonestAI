@@ -2,7 +2,7 @@
   "expo": {
     "name": "PhotoNest 업로더",
     "slug": "photonest-uploader",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "scheme": "photonest",
     "userInterfaceStyle": "dark",
@@ -32,6 +32,7 @@
     },
     "android": {
       "package": "com.photonest.uploader",
+      "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundImage": "./assets/adaptive-bg.png"

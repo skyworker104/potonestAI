@@ -124,21 +124,27 @@ RUNEOF
 # ---- 폰 업로더 앱(APK) 자동 다운로드 ----
 # APK는 data/(gitignore)에 있어 clone에 안 딸려온다 → EAS에서 내려받아
 # 서버가 '폰 연결' 탭 QR로 배포하게 한다. 실패해도 설치는 계속(선택 기능).
+# 받아둔 APK의 출처 URL을 .url에 남긴다. 새 빌드를 올리면 APK_URL.txt가 바뀌므로
+# 재설치 시 그 차이를 보고 최신 APK를 다시 받는다(안 그러면 옛 APK가 계속 배포됨).
 APK_DST="$PROJ/data/app/photonest-uploader.apk"
-if [ -f "$APK_DST" ]; then
-  echo "→ 폰 업로더 앱(APK) 이미 있음 — 건너뜀"
-elif [ -f "$PROJ/mobile/APK_URL.txt" ]; then
-  APK_URL=$(tr -d ' \t\r\n' < "$PROJ/mobile/APK_URL.txt")
-  if [ -n "$APK_URL" ]; then
-    echo "→ 폰 업로더 앱(APK) 다운로드 중… (~80MB)"
-    mkdir -p "$PROJ/data/app"
-    if curl -fL --retry 2 -o "$APK_DST.part" "$APK_URL" && [ -s "$APK_DST.part" ]; then
-      mv "$APK_DST.part" "$APK_DST"
-      echo "  ✓ APK 준비 완료 — '폰 연결' 탭 QR로 폰에 설치하세요"
-    else
-      rm -f "$APK_DST.part"
-      echo "  ⚠️  APK 다운로드 실패(선택 기능) — 나중에 '폰 연결' 탭 안내대로 받으면 됩니다"
-    fi
+APK_SRC="$APK_DST.url"
+APK_URL=""
+[ -f "$PROJ/mobile/APK_URL.txt" ] && APK_URL=$(tr -d ' \t\r\n' < "$PROJ/mobile/APK_URL.txt")
+if [ -z "$APK_URL" ]; then
+  :
+elif [ -f "$APK_DST" ] && [ "$(cat "$APK_SRC" 2>/dev/null)" = "$APK_URL" ]; then
+  echo "→ 폰 업로더 앱(APK) 최신 — 건너뜀"
+else
+  [ -f "$APK_DST" ] && echo "→ 폰 업로더 앱(APK) 새 버전 있음 — 다시 받습니다"
+  echo "→ 폰 업로더 앱(APK) 다운로드 중… (~80MB)"
+  mkdir -p "$PROJ/data/app"
+  if curl -fL --retry 2 -o "$APK_DST.part" "$APK_URL" && [ -s "$APK_DST.part" ]; then
+    mv "$APK_DST.part" "$APK_DST"
+    printf '%s\n' "$APK_URL" > "$APK_SRC"
+    echo "  ✓ APK 준비 완료 — '폰 연결' 탭 QR로 폰에 설치하세요"
+  else
+    rm -f "$APK_DST.part"
+    echo "  ⚠️  APK 다운로드 실패(선택 기능) — 나중에 '폰 연결' 탭 안내대로 받으면 됩니다"
   fi
 fi
 

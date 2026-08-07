@@ -57,6 +57,19 @@ eas build -p android --profile preview
 `data/app/photonest-uploader.apk`에 두면 — PC '폰 연결' 탭에 **앱 다운로드 QR이 자동 표시**됩니다.
 사용자는 QR로 받아 설치(‘알 수 없는 출처’ 허용)하면 끝.
 
+#### 새 버전을 배포할 때
+
+`data/`는 gitignore라 APK가 clone에 딸려오지 않습니다. 대신 설치 스크립트가
+`mobile/APK_URL.txt`의 링크로 내려받으므로, 새로 빌드하면 **세 가지를 같이 올려야** 합니다.
+
+1. `mobile/app.json` — `version`과 안드로이드 `versionCode`를 올린다
+   (versionCode를 안 올리면 기존 설치 위에 업데이트가 안 됨)
+2. `mobile/APK_URL.txt` — EAS가 준 새 링크로 교체
+3. 새 APK를 `data/app/photonest-uploader.apk`로 교체
+
+설치된 기기는 `scripts/install-termux.sh`를 다시 돌리면 됩니다. 받아둔 APK 옆의
+`photonest-uploader.apk.url`에 출처가 적혀 있어, `APK_URL.txt`와 다를 때만 다시 받습니다.
+
 ### 3) 아이폰
 Apple 정책상 QR 사이드로드가 안 됩니다. 둘 중 하나:
 - **TestFlight**(베타, 무료 배포·100명): `eas build -p ios --profile preview` → `eas submit` → TestFlight 링크

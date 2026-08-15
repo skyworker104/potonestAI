@@ -86,11 +86,14 @@ def _safe_subdir(subdir: str):
     """업로드가 지정한 상대 하위경로 정리 — 경로 탈출·숨김·특수문자 제거."""
     parts = []
     for part in Path(subdir.replace("\\", "/")).parts:
-        if part in ("..", "/", "~") or part.startswith("."):
+        if part in ("/", "~") or part.startswith("."):
             continue
         clean = "".join(ch for ch in part if ch not in '<>:"|?*').strip()
-        if clean:
-            parts.append(clean)
+        # 특수문자를 걷어낸 뒤 점만 남는 경우가 있다(예: '<..>' → '..').
+        # 그대로 두면 상위로 거슬러 올라가 라이브러리 밖에 파일이 생긴다.
+        if not clean or set(clean) == {"."}:
+            continue
+        parts.append(clean)
     return Path(*parts) if parts else None
 
 
@@ -156,7 +159,9 @@ async def upload(
     dest_dir = _upload_root() / device
     if subdir:
         sd = _safe_subdir(subdir)
-        if sd:
+        # 정리를 거쳤더라도 최종 경로가 업로드 폴더 안인지 한 번 더 확인한다.
+        # (정리 규칙이 나중에 바뀌어도 라이브러리 밖 쓰기는 막히도록)
+        if sd and (dest_dir / sd).resolve().is_relative_to(_upload_root().resolve()):
             dest_dir = dest_dir / sd
     dest_dir.mkdir(parents=True, exist_ok=True)
 

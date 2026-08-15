@@ -214,8 +214,11 @@ async def upload(
 
 def _dav_path(rest: str) -> Optional[Path]:
     rest = urllib.parse.unquote(rest or "").strip("/")
-    p = (_upload_root() / rest).resolve()
-    if not str(p).startswith(str(_upload_root().resolve())):
+    root = _upload_root().resolve()
+    p = (root / rest).resolve()
+    # 문자열 접두사 비교는 이름이 겹치는 형제 폴더를 통과시킨다
+    # ('../MobileBackupEvil'이 'MobileBackup'으로 시작) — 경로 단위로 확인한다.
+    if not p.is_relative_to(root):
         return None
     return p
 

@@ -6,7 +6,6 @@
    밖에 파일이 생겨선 안 된다.
 """
 import io
-import sqlite3
 from pathlib import Path
 
 import piexif

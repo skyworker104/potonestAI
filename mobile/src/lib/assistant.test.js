@@ -31,6 +31,14 @@ const cases = [
   ["백업된 사진 구경할래", "server_photos", { connected: true }],
   ["서버 사진 보고 싶어", "server_photos", { connected: false }],   // 미연결 → 연결 유도
   ["최근 사진만 올려줘", "backup_now", { connected: true }],        // 회귀: 백업이 가로채이면 안 됨
+  ["리모콘", "remote_speak", { connected: true }],
+  ["리모컨으로 말할래", "remote_speak", { connected: true }],
+  ["말로 조종하고 싶어", "remote_speak", { connected: true }],
+  ["리모콘 켜줘", "remote_speak", { connected: false }],            // 미연결 → 연결 유도
+  ["설정", "settings", { connected: true }],
+  ["앱 버전 알려줘", "settings", { connected: true }],
+  ["와이파이 자동백업 설정", "auto_on", { connected: true }],       // '설정'이 자동백업을 가로채면 안 됨
+  ["폴더 설정 바꿀래", "pick_albums", { connected: true }],         // '설정'이 폴더를 가로채면 안 됨
   ["도움말", "help", {}],
   ["뭐 할 수 있어?", "help", {}],
   ["고마워", "thanks", {}],

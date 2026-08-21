@@ -253,8 +253,16 @@ function tryUICommand(text) {
   return false;
 }
 
-function handleUtterance(text) {
-  addMsg(text, "user");
+/* from: "phone"이면 폰 리모콘에서 온 발화 — 처리 경로는 마이크와 완전히 같고
+   말풍선에 출처만 표시한다. */
+function handleUtterance(text, from) {
+  const msg = addMsg(text, "user");
+  if (from === "phone") {
+    const b = document.createElement("span");
+    b.className = "engine-badge";
+    b.textContent = "📱 폰";
+    msg.appendChild(b);
+  }
   if (!tryUICommand(text)) sendToAI(text);
 }
 

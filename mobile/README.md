@@ -29,6 +29,25 @@ mobile/
   src/screens/ChatScreen.js   대화형 메인 화면
 ```
 
+## 리모콘 말하기 (v1.2.0~)
+
+폰에서 말하면 **서버 화면이 그대로 실행**합니다. 서버에서 마이크를 눌러 말한 것과
+같은 경로를 타므로, 검색뿐 아니라 슬라이드쇼·앨범 같은 화면 조작도 동일하게 됩니다.
+
+```
+폰: 마이크 → 음성인식(텍스트)
+  → POST /api/remote/say
+서버 화면: GET /api/remote/poll (롱폴링)
+  → handleUtterance(text)   ← 마이크로 들은 것과 같은 함수
+```
+
+`/api/chat`으로 대신할 수 없습니다. "슬라이드쇼 시작", "다음 사진" 같은 명령은
+브라우저 안에서만 처리되기 때문입니다.
+
+- 서버 화면이 열려 있지 않으면 폰에 그렇게 알려줍니다(`viewer: false`).
+- 화면을 켜기 전에 쌓인 명령은 흘려보냅니다 — 몇 분 전 "슬라이드쇼 시작"이
+  갑자기 실행되지 않도록.
+
 ## 빌드 & 배포
 
 > 이 컴퓨터엔 Xcode/Android SDK가 없어 빌드는 아래 도구로 진행하세요.
@@ -69,7 +88,8 @@ eas build -p android --profile preview
 
 ```bash
 # 1) 버전 올리기 — versionCode를 안 올리면 기존 설치 위에 업데이트가 안 된다
-#    mobile/app.json 의 expo.version, expo.android.versionCode
+#    mobile/app.json 의 expo.version, expo.android.versionCode,
+#    그리고 expo.extra.buildDate 를 빌드하는 날짜로 (설정 화면에 표시된다)
 
 # 2) 빌드하고 APK를 내려받아 data/app/photonest-uploader.apk 로 교체
 eas build -p android --profile preview

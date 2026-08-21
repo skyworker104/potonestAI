@@ -2,7 +2,7 @@
   "expo": {
     "name": "PhotoNest 업로더",
     "slug": "photonest-uploader",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "scheme": "photonest",
     "userInterfaceStyle": "dark",
@@ -28,11 +28,12 @@
           "fetch",
           "processing"
         ]
-      }
+      },
+      "buildNumber": "3"
     },
     "android": {
       "package": "com.photonest.uploader",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundImage": "./assets/adaptive-bg.png"
@@ -46,7 +47,8 @@
         "FOREGROUND_SERVICE",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.ACCESS_MEDIA_LOCATION"
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -63,14 +65,24 @@
       [
         "expo-build-properties",
         {
-          "android": { "usesCleartextTraffic": true }
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "폰에서 말한 명령을 PhotoNest 서버 화면으로 전달하기 위해 마이크를 사용합니다.",
+          "speechRecognitionPermission": "말한 내용을 글자로 바꿔 서버에 전달하기 위해 음성 인식을 사용합니다."
         }
       ]
     ],
     "extra": {
       "eas": {
         "projectId": "fdf2c72c-3ede-4321-b43a-7b96da598c74"
-      }
+      },
+      "buildDate": "2026-08-21"
     },
     "owner": "y73bs104"
   }

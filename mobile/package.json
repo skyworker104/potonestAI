@@ -6,7 +6,9 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "test:assistant": "node src/lib/assistant.test.js"
+    "test:assistant": "node src/lib/assistant.test.js",
+    "test:server-check": "node src/lib/serverCheck.test.js",
+    "test": "node src/lib/assistant.test.js && node src/lib/serverCheck.test.js"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.23.1",
@@ -20,10 +22,12 @@
     "expo-keep-awake": "~14.0.3",
     "expo-media-library": "~17.0.4",
     "expo-network": "~7.0.4",
+    "expo-speech-recognition": "^1.1.1",
     "expo-status-bar": "~2.0.0",
     "expo-task-manager": "~12.0.3",
     "react": "18.3.1",
-    "react-native": "0.76.9"
+    "react-native": "0.76.9",
+    "react-native-webview": "^13.12.5"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",

@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Linking,
+  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator,
 } from "react-native";
 import * as MediaLibrary from "expo-media-library";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -13,11 +13,13 @@ import { checkServer } from "../lib/api";
 import { runBackup, cancelBackup } from "../lib/backup";
 import { loadConfig, saveConfig } from "../lib/storage";
 import { registerAutoBackup, unregisterAutoBackup } from "../lib/backgroundTask";
-
-const C = {
-  bg: "#0f1117", panel: "#171a23", panel2: "#1e2230", text: "#e8eaf0",
-  muted: "#8b91a3", accent: "#4f8cff", user: "#2b3550", ai: "#232838",
-};
+import {
+  isSpeechAvailable, requestSpeechPermission, startListening, stopListening,
+  useSpeechEvent, transcriptOf, sendRemote,
+} from "../lib/remote";
+import SettingsScreen from "./SettingsScreen";
+import ServerScreen from "./ServerScreen";
+import { C } from "../theme";
 
 export default function ChatScreen() {
   const [messages, setMessages] = useState([]);
@@ -29,8 +31,65 @@ export default function ChatScreen() {
   const [albumModal, setAlbumModal] = useState(false);
   const [albums, setAlbums] = useState([]);
   const [selIds, setSelIds] = useState(new Set());
+  const [screen, setScreen] = useState("chat");   // chat | settings | server
+  const [listening, setListening] = useState(false);
+  const [heard, setHeard] = useState("");         // 인식 중인 말 (중간 결과)
   const scrollRef = useRef(null);
   const [perm, requestPerm] = useCameraPermissions();
+
+  // ---- 리모콘 말하기: 인식 결과를 서버 화면의 명령으로 보낸다 ----
+  const cfgRef = useRef(cfg);
+  cfgRef.current = cfg;
+
+  useSpeechEvent("result", (e) => {
+    const text = transcriptOf(e);
+    if (!text) return;
+    if (!e.isFinal) { setHeard(text); return; }
+    setHeard("");
+    setListening(false);
+    deliverRemote(text);
+  });
+  useSpeechEvent("end", () => { setListening(false); setHeard(""); });
+  useSpeechEvent("error", (e) => {
+    setListening(false);
+    setHeard("");
+    const why = e?.error === "no-speech" ? "말소리가 들리지 않았어요."
+      : e?.error === "not-allowed" ? "마이크 권한이 없어요. 설정에서 허용해 주세요."
+      : `음성 인식에 실패했어요 (${e?.error || "알 수 없음"}).`;
+    addAI(why);
+  });
+
+  async function deliverRemote(text) {
+    addUser(`🎙 ${text}`);
+    const r = await sendRemote(cfgRef.current?.serverUrl, text);
+    if (!r.ok) { addAI(r.error || "전달하지 못했어요."); return; }
+    addAI(r.viewer
+      ? `서버 화면에 “${text}”라고 전달했어요. 화면을 보세요!`
+      : `“${text}”를 보냈는데, 서버 화면(PhotoNest)이 열려 있지 않은 것 같아요.\n태블릿·PC에서 PhotoNest 화면을 켜두면 바로 실행돼요.`);
+  }
+
+  async function toggleMic() {
+    if (listening) { stopListening(); setListening(false); return; }
+    if (!cfg?.serverUrl) {
+      addAI("리모콘을 쓰려면 먼저 서버에 연결해야 해요. ‘QR 스캔’을 눌러주세요.");
+      return;
+    }
+    if (!isSpeechAvailable()) {
+      addAI("이 빌드에는 음성 인식이 들어 있지 않아요. 최신 앱으로 업데이트해 주세요.\n그동안에는 아래 입력창에 명령을 적어 ‘리모콘 전송’을 쓰실 수 있어요.");
+      return;
+    }
+    if (!(await requestSpeechPermission())) {
+      addAI("마이크 권한이 필요해요. 설정에서 마이크 접근을 허용해 주세요.");
+      return;
+    }
+    try {
+      startListening();
+      setListening(true);
+      setHeard("");
+    } catch (e) {
+      addAI(e.message || "음성 인식을 시작하지 못했어요.");
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -89,9 +148,14 @@ export default function ChatScreen() {
       case "pick_albums":
         return openAlbumPicker();
       case "open_server_photos":
-        // 서버 웹앱(모바일 반응형)을 폰 브라우저로 — PC와 동일한 검색·타임라인·앨범
-        if (cfg?.serverUrl) Linking.openURL(cfg.serverUrl).catch(() => {});
+        // 앱 안 웹뷰로 — PC와 동일한 검색·타임라인·앨범. 대화창으로 바로 돌아온다.
+        if (cfg?.serverUrl) setScreen("server");
         return;
+      case "open_settings":
+        setScreen("settings");
+        return;
+      case "remote_speak":
+        return toggleMic();
       default:
         return;
     }
@@ -210,6 +274,21 @@ export default function ChatScreen() {
     );
   }
 
+  if (screen === "settings") {
+    return (
+      <SettingsScreen
+        cfg={cfg}
+        onClose={() => setScreen("chat")}
+        onPickAlbums={() => { setScreen("chat"); openAlbumPicker(); }}
+        onOpenServer={() => setScreen("server")}
+      />
+    );
+  }
+
+  if (screen === "server") {
+    return <ServerScreen serverUrl={cfg?.serverUrl} onClose={() => setScreen("chat")} />;
+  }
+
   if (albumModal) {
     return (
       <View style={s.root}>
@@ -256,8 +335,8 @@ export default function ChatScreen() {
         </View>
         <TouchableOpacity
           style={s.gear}
-          onPress={openAlbumPicker}
-          accessibilityLabel="백업할 폴더 설정"
+          onPress={() => setScreen("settings")}
+          accessibilityLabel="설정"
         >
           <Text style={{ fontSize: 20 }}>⚙️</Text>
         </TouchableOpacity>
@@ -277,8 +356,19 @@ export default function ChatScreen() {
         )}
       </ScrollView>
 
+      {listening && (
+        <View style={s.listening}>
+          <Text style={s.listeningText}>
+            🎙 듣고 있어요 — {heard || "말씀하세요"}
+          </Text>
+          <TouchableOpacity onPress={toggleMic}>
+            <Text style={{ color: C.accent, fontSize: 13 }}>중지</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={s.quick}>
-        {["백업 시작", "서버 사진 보기", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "도움말"].map((q) => (
+        {["백업 시작", "서버 사진 보기", "리모콘", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "도움말"].map((q) => (
           <TouchableOpacity key={q} style={s.chip} onPress={() => (q === "QR 스캔" ? openScanner() : handle(q))}>
             <Text style={s.chipText}>{q}</Text>
           </TouchableOpacity>
@@ -286,6 +376,13 @@ export default function ChatScreen() {
       </View>
 
       <View style={s.composer}>
+        <TouchableOpacity
+          style={[s.mic, listening && s.micOn]}
+          onPress={toggleMic}
+          accessibilityLabel="리모콘 말하기"
+        >
+          <Text style={{ fontSize: 19 }}>{listening ? "⏹" : "🎙"}</Text>
+        </TouchableOpacity>
         <TextInput
           style={s.input} value={input} onChangeText={setInput}
           placeholder="예: 최근 사진만 올려줘" placeholderTextColor={C.muted}
@@ -301,6 +398,17 @@ export default function ChatScreen() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
+  listening: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    marginHorizontal: 12, marginBottom: 6, padding: 11, borderRadius: 12,
+    backgroundColor: "rgba(79,140,255,.14)", borderWidth: 1, borderColor: C.accent,
+  },
+  listeningText: { flex: 1, color: C.text, fontSize: 13 },
+  mic: {
+    width: 46, borderRadius: 10, alignItems: "center", justifyContent: "center",
+    backgroundColor: C.panel2, borderWidth: 1, borderColor: "#2c3245",
+  },
+  micOn: { backgroundColor: "rgba(79,140,255,.22)", borderColor: C.accent },
   header: {
     padding: 16, paddingTop: 54, borderBottomColor: "#262b3a", borderBottomWidth: 1,
     flexDirection: "row", alignItems: "center", gap: 10,

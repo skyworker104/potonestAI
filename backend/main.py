@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, indexer, llm, search, storage, upload
+from . import appdist, db, indexer, llm, search, storage, upload
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -17,6 +17,7 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 app = FastAPI(title="PhotoNest AI")
 app.include_router(upload.router)
 app.include_router(storage.router)
+app.include_router(appdist.router)
 
 
 @app.get("/upload")
@@ -231,14 +232,17 @@ def reindex():
 
 # ---------- 전용 모바일 앱 배포 ----------
 
-APK_PATH = BASE_DIR / "data" / "app" / "photonest-uploader.apk"          # 일반 배포용(preview)
-APK_DEV_PATH = BASE_DIR / "data" / "app" / "photonest-uploader-dev.apk"  # 개발용(dev client)
+APK_PATH = appdist.APK_PATH          # 일반 배포용(preview)
+APK_DEV_PATH = appdist.APK_DEV_PATH  # 개발용(dev client)
 
 
 @app.get("/api/app-info")
 def app_info():
     """전용 업로드 앱 다운로드 정보. APK가 준비돼 있으면 QR로 안내."""
     from . import upload
+    # git pull로는 APK(80MB)가 따라오지 않는다 — 저장소 링크가 가리키는 빌드와
+    # 로컬 파일이 어긋나면 여기서 받아온다. 받는 동안에도 응답은 바로 돌아간다.
+    appdist.refresh()
     si = upload.server_info()
     base = f"http://{si['ip']}:{si['port']}"
     return {
@@ -247,6 +251,7 @@ def app_info():
         "apk_url": f"{base}/download/app" if APK_PATH.is_file() else None,
         "apk_dev_available": APK_DEV_PATH.is_file(),
         "apk_dev_url": f"{base}/download/app-dev" if APK_DEV_PATH.is_file() else None,
+        **appdist.status(),
     }
 
 

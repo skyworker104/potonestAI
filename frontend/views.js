@@ -418,17 +418,13 @@ views.phone = async () => {
     colorDark: "#0f1117", colorLight: "#ffffff",
   });
   // 전용 앱 다운로드 QR (APK가 준비된 경우)
-  const appStatus = document.getElementById("app-dl-status");
   if (appInfo.apk_available && appInfo.apk_url) {
     new QRCode(document.getElementById("app-qr-box"), {
       text: appInfo.apk_url, width: 180, height: 180,
       colorDark: "#0f1117", colorLight: "#ffffff",
     });
-    if (appStatus) appStatus.innerHTML = `📥 <code>${appInfo.apk_url}</code>`;
-  } else if (appStatus) {
-    appStatus.innerHTML = `ℹ️ 앱이 아직 빌드되지 않았습니다. <code>mobile/README.md</code>의 안내대로
-      빌드해 <code>data/app/photonest-uploader.apk</code>에 두면 여기 QR이 자동으로 나타납니다.`;
   }
+  renderAppStatus(appInfo);
   // 개발용(dev client) 앱 QR — 개발자 본인용
   const devBox = document.getElementById("app-dev-box");
   if (devBox && appInfo.apk_dev_available && appInfo.apk_dev_url) {
@@ -455,6 +451,48 @@ views.phone = async () => {
   } catch (_) { /* 무시 */ }
   renderTakeoutAlbums();
 };
+
+/* 전용 앱 배포 상태 — 저장소가 가리키는 빌드를 서버가 실제로 갖고 있는지.
+   APK는 git에 없으므로(용량) git pull 뒤엔 서버가 링크를 보고 직접 받아온다. */
+function renderAppStatus(a) {
+  const el = document.getElementById("app-dl-status");
+  if (!el) return;  // 다른 화면으로 넘어갔다
+  const up = a.apk_update || {};
+  const ver = a.apk_version ? `v${a.apk_version}` : "";
+  const btn = `<button class="app-refresh">최신 앱 받기</button>`;
+  if (up.state === "downloading") {
+    el.innerHTML = `⏳ 새 앱 ${ver} 내려받는 중… ${up.percent || 0}%`;
+    setTimeout(pollAppUpdate, 1500);
+  } else if (up.state === "error") {
+    el.innerHTML = `⚠️ 앱을 받지 못했습니다 — ${up.error || ""} ${btn}`;
+  } else if (!a.apk_available) {
+    el.innerHTML = `ℹ️ 서버에 앱이 없습니다. <code>mobile/APK_URL.txt</code>의 링크에서 받아오거나,
+      <code>mobile/README.md</code>대로 빌드해 <code>data/app/photonest-uploader.apk</code>에 두세요. ${btn}`;
+  } else if (a.apk_current) {
+    el.innerHTML = `📥 <code>${a.apk_url}</code> — 최신 ${ver}`;
+  } else {
+    el.innerHTML = `📥 <code>${a.apk_url}</code><br>
+      ⚠️ 서버의 앱이 최신(${ver})이 아닙니다 — 받아서 폰에 다시 설치하세요. ${btn}`;
+  }
+  const b = el.querySelector(".app-refresh");
+  if (b) b.onclick = async () => {
+    b.disabled = true;
+    renderAppStatus(await api.post("/api/app-refresh"));
+  };
+}
+
+async function pollAppUpdate() {
+  if (!document.getElementById("app-dl-status")) return;  // 화면이 바뀌면 멈춘다
+  try {
+    const a = await api.get("/api/app-info");
+    const box = document.getElementById("app-qr-box");
+    if (a.apk_available && box && !box.childElementCount) {
+      views.phone();  // 없던 APK가 생겼다 — QR까지 다시 그린다
+      return;
+    }
+    renderAppStatus(a);
+  } catch (_) { /* 무시 */ }
+}
 
 /* 구글포토 앨범 폴더 감지 → 사용자에게 묻고 앨범 생성 */
 async function renderTakeoutAlbums() {

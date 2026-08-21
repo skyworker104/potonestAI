@@ -1,1 +1,1 @@
-https://github.com/skyworker104/potonestAI/releases/download/uploader-v1.1.0/photonest-uploader.apk
+https://github.com/skyworker104/potonestAI/releases/download/uploader-v1.2.0/photonest-uploader.apk

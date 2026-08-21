@@ -83,9 +83,15 @@ echo "https://github.com/<계정>/<저장소>/releases/download/uploader-v1.2.0/
 # 4) 커밋·푸시
 ```
 
-설치된 기기는 **`git pull` 후 '폰 연결' 탭을 열면** 서버가 링크 변경을 알아채고
-새 APK를 받아옵니다(탭에 버전과 진행률이 표시됨). 받아둔 APK 옆의
-`photonest-uploader.apk.url`에 출처가 적혀 있어 같은 빌드를 두 번 받지는 않습니다.
+설치된 기기(태블릿)에서는 Termux에서 이렇게 받습니다.
+
+```bash
+cd ~/photonest && git pull && bash scripts/restart.sh
+```
+
+재시작 뒤 **'폰 연결' 탭을 열면** 서버가 링크 변경을 알아채고 새 APK를 받아옵니다
+(탭에 버전과 진행률이 표시됨). 받아둔 APK 옆의 `photonest-uploader.apk.url`에
+출처가 적혀 있어 같은 빌드를 두 번 받지는 않습니다.
 `scripts/install-termux.sh`를 다시 돌려도 동일하게 갱신됩니다.
 
 ### 3) 아이폰

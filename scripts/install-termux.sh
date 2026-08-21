@@ -175,6 +175,7 @@ echo
 echo "✅ 설치 완료!"
 echo "   시작:  ~/run-photonest.sh"
 echo "   화면:  tmux attach -t photonest"
+echo "   갱신:  cd $PROJ && git pull && bash scripts/restart.sh"
 echo
 echo "⚠️  안정 운용을 위해 한 번만 해두세요:"
 echo "   1) 안드로이드 설정 → 배터리 → Termux → '제한 없음'으로"

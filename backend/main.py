@@ -1,11 +1,12 @@
 """PhotoNest AI — 로컬 구글포토: 대화형 검색 + 타임라인/앨범/지도/휴지통 서버."""
 import os
+import re
 import threading
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -826,6 +827,38 @@ def thumb(item_id: str):
     if not p.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(p)
+
+
+# ---------- 프론트엔드 ----------
+
+_ASSET_V = re.compile(r"([\w.\-/]+\.(?:js|css))\?v=[^\"']*")
+
+
+def _stamped_index():
+    """index.html의 ?v= 를 파일의 실제 수정시각으로 바꿔 내보낸다.
+
+    번호를 손으로 올리는 방식은 잊기 쉽다 — 실제로 views.js를 고치고 ?v=를
+    안 올려서, 태블릿 브라우저가 몇 커밋 전 스크립트를 계속 캐시에서 썼다.
+    파일이 바뀌면 주소가 자동으로 달라지도록 서버가 채워 넣는다.
+    (CDN 주소는 ?v= 가 없어 건드리지 않는다.)
+    """
+    html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+    def stamp(m):
+        name = m.group(1)
+        try:
+            return f"{name}?v={int((FRONTEND_DIR / name).stat().st_mtime)}"
+        except OSError:
+            return m.group(0)  # 없는 파일은 그대로 둔다
+
+    return _ASSET_V.sub(stamp, html)
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
+def index():
+    # 캐시 방지 — 여기서 스크립트 주소가 정해지므로 이 문서만은 매번 새로 받아야 한다
+    return HTMLResponse(_stamped_index(), headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

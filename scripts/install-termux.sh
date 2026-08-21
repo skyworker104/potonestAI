@@ -122,8 +122,9 @@ RUNEOF
 '
 
 # ---- 폰 업로더 앱(APK) 자동 다운로드 ----
-# APK는 data/(gitignore)에 있어 clone에 안 딸려온다 → EAS에서 내려받아
-# 서버가 '폰 연결' 탭 QR로 배포하게 한다. 실패해도 설치는 계속(선택 기능).
+# APK는 data/(gitignore)에 있어 clone에 안 딸려온다 → APK_URL.txt의 링크(GitHub
+# 릴리스)에서 받아 서버가 '폰 연결' 탭 QR로 배포하게 한다. 실패해도 설치는
+# 계속(선택 기능) — 서버가 나중에 '폰 연결' 탭에서 다시 받아온다.
 # 받아둔 APK의 출처 URL을 .url에 남긴다. 새 빌드를 올리면 APK_URL.txt가 바뀌므로
 # 재설치 시 그 차이를 보고 최신 APK를 다시 받는다(안 그러면 옛 APK가 계속 배포됨).
 APK_DST="$PROJ/data/app/photonest-uploader.apk"

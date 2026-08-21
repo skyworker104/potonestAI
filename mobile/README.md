@@ -59,16 +59,34 @@ eas build -p android --profile preview
 
 #### 새 버전을 배포할 때
 
-`data/`는 gitignore라 APK가 clone에 딸려오지 않습니다. 대신 설치 스크립트가
-`mobile/APK_URL.txt`의 링크로 내려받으므로, 새로 빌드하면 **세 가지를 같이 올려야** 합니다.
+`data/`는 gitignore라 APK가 clone에 딸려오지 않습니다. 서버·설치 스크립트가
+`mobile/APK_URL.txt`의 링크로 내려받는 구조입니다.
 
-1. `mobile/app.json` — `version`과 안드로이드 `versionCode`를 올린다
-   (versionCode를 안 올리면 기존 설치 위에 업데이트가 안 됨)
-2. `mobile/APK_URL.txt` — EAS가 준 새 링크로 교체
-3. 새 APK를 `data/app/photonest-uploader.apk`로 교체
+> ⚠️ **EAS가 준 링크(`expo.dev/artifacts/...`)를 그대로 쓰지 마세요.** 아티팩트는
+> 일정 기간 뒤 사라집니다(실제로 3주 만에 404가 났습니다). 링크가 죽으면 새로
+> 설치하는 기기는 앱을 받을 방법이 없어집니다. **GitHub 릴리스에 올려** 만료
+> 없는 주소를 쓰세요.
 
-설치된 기기는 `scripts/install-termux.sh`를 다시 돌리면 됩니다. 받아둔 APK 옆의
-`photonest-uploader.apk.url`에 출처가 적혀 있어, `APK_URL.txt`와 다를 때만 다시 받습니다.
+```bash
+# 1) 버전 올리기 — versionCode를 안 올리면 기존 설치 위에 업데이트가 안 된다
+#    mobile/app.json 의 expo.version, expo.android.versionCode
+
+# 2) 빌드하고 APK를 내려받아 data/app/photonest-uploader.apk 로 교체
+eas build -p android --profile preview
+
+# 3) GitHub 릴리스로 올리고, 그 주소를 APK_URL.txt에 넣는다
+gh release create uploader-v1.2.0 data/app/photonest-uploader.apk \
+  --title "PhotoNest 업로더 v1.2.0 (Android)"
+echo "https://github.com/<계정>/<저장소>/releases/download/uploader-v1.2.0/photonest-uploader.apk" \
+  > mobile/APK_URL.txt
+
+# 4) 커밋·푸시
+```
+
+설치된 기기는 **`git pull` 후 '폰 연결' 탭을 열면** 서버가 링크 변경을 알아채고
+새 APK를 받아옵니다(탭에 버전과 진행률이 표시됨). 받아둔 APK 옆의
+`photonest-uploader.apk.url`에 출처가 적혀 있어 같은 빌드를 두 번 받지는 않습니다.
+`scripts/install-termux.sh`를 다시 돌려도 동일하게 갱신됩니다.
 
 ### 3) 아이폰
 Apple 정책상 QR 사이드로드가 안 됩니다. 둘 중 하나:

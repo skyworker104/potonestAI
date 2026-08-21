@@ -1,1 +1,1 @@
-https://expo.dev/artifacts/eas/fyGJP2q4K4zIcVM64pv2-8VH_j8kjKCrO0zyw7M9brA.apk
+https://github.com/skyworker104/potonestAI/releases/download/uploader-v1.1.0/photonest-uploader.apk

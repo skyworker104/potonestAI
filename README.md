@@ -204,6 +204,9 @@ tmux attach -t photonest    # 로그 화면 보기 (Ctrl+b, d로 빠져나옴)
   폰에서 올리는 새 사진은 폰이 임베딩을 만들어 주면(업로드 페이지 옵션) 태블릿 부담이 없습니다.
 - 안정 운용: 배터리 최적화 예외 + 안드로이드 12+는 phantom process killer 해제
   (`adb shell settings put global settings_enable_monitor_phantom_procs false`).
+- Immich 앱 호환 계층을 쓰려면 계정 설정을 **proot 안에서** 해야 합니다
+  (venv가 proot 파이썬으로 만들어져 Termux 셸에서는 실행되지 않습니다) —
+  아래 "Immich 앱으로 쓰기" 참고.
 
 ### 메모리 인식 색인 (모든 플랫폼)
 
@@ -302,6 +305,17 @@ Immich 앱은 이메일/비밀번호 로그인을 전제로 만들어져 있어�
 # 이메일은 아무 주소나 됩니다 (예: me@home.lan) — 메일을 보내지 않습니다
 # 끝나면 접속 주소와 TV 앱용 API 키를 출력합니다
 ```
+
+**안드로이드 태블릿(Termux) 서버라면** venv가 proot(Debian) 안에 있어 Termux 셸에서
+직접 실행되지 않습니다. proot로 들어가서 실행하세요(경로는 clone한 폴더로):
+
+```bash
+proot-distro login debian --bind ~/photonest:/opt/photonest -- \
+  bash -c 'cd /opt/photonest && .venv/bin/python -m scripts.immich_account'
+```
+
+시스템 파이썬(`python -m scripts.immich_account`)으로 불러도 venv로 자동 재실행하며,
+그게 불가능한 환경에서는 위 명령을 안내합니다.
 
 이미 만든 설정은 `--show`로 확인하고, API 키만 새로 발급하려면 `--rotate-key`를 씁니다.
 계정 정보는 `data/app/immich_auth.json`(권한 0600)에 저장되며 비밀번호는 PBKDF2 해시로만

@@ -4,22 +4,94 @@
 Immich 앱은 이메일/비밀번호 로그인을 전제로 만들어져 있어서, PhotoNest 본체와
 달리 이 계층만은 계정이 필요하다. 설정 전에는 앱이 붙지 않는다.
 
-    python -m scripts.immich_account                         # 대화형
-    python -m scripts.immich_account --email me@home.lan --password 비밀번호12
-    python -m scripts.immich_account --show                   # 현재 설정 보기
-    python -m scripts.immich_account --rotate-key             # API 키만 새로 발급
+    .venv/bin/python -m scripts.immich_account                # 대화형
+    .venv/bin/python -m scripts.immich_account --email me@home.lan --password 비밀번호12
+    .venv/bin/python -m scripts.immich_account --show         # 현재 설정 보기
+    .venv/bin/python -m scripts.immich_account --rotate-key   # API 키만 새로 발급
+
+Termux(안드로이드) 서버는 venv가 proot Debian 안에 있어 proot로 들어가야 한다:
+
+    proot-distro login debian --bind ~/photonest:/opt/photonest -- \
+      bash -c 'cd /opt/photonest && .venv/bin/python -m scripts.immich_account'
+
+시스템 파이썬으로 부르면 venv로 자동 재실행하고, 그마저 안 되는 환경에서는
+무엇을 해야 하는지 안내한다.
 
 저장 위치: data/app/immich_auth.json (권한 0600). 비밀번호는 PBKDF2 해시로만
 보관한다. API 키는 TV 앱처럼 로그인 화면이 없는 클라이언트가 x-api-key로 쓴다.
 """
 import argparse
 import getpass
+import os
 import secrets
 import socket
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+
+def _deps_ready():
+    try:
+        import fastapi  # noqa: F401
+        import PIL  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _venv_python():
+    for rel in ("bin/python", "Scripts/python.exe"):
+        candidate = ROOT / ".venv" / rel
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _explain_and_exit():
+    """venv로 어떻게 실행하는지 알려준다 — 날것의 ImportError보다 낫다."""
+    termux = "com.termux" in sys.prefix or "com.termux" in (os.environ.get("PREFIX") or "")
+    out = sys.stderr
+    print("필요한 패키지(fastapi/Pillow)를 찾을 수 없습니다 — "
+          "시스템 파이썬이 아니라 프로젝트 venv로 실행해야 합니다.", file=out)
+    print(file=out)
+    if termux:
+        # Termux의 .venv는 proot Debian 파이썬으로 만들어져 Termux 셸에서는
+        # 실행조차 되지 않는다 (install-termux.sh가 그렇게 만든다).
+        print("Termux에서는 venv가 proot(Debian) 안에 있어 Termux 셸에서 못 씁니다.",
+              file=out)
+        print("proot 안에서 실행하세요:", file=out)
+        print(file=out)
+        print("  proot-distro login debian --bind %s:/opt/photonest -- \\" % ROOT,
+              file=out)
+        print("    bash -c 'cd /opt/photonest && "
+              ".venv/bin/python -m scripts.immich_account'", file=out)
+    else:
+        print("  cd %s && .venv/bin/python -m scripts.immich_account" % ROOT, file=out)
+        print(file=out)
+        print("(.venv이 없으면 먼저 ./install.sh 를 실행하세요)", file=out)
+    sys.exit(1)
+
+
+def _bootstrap():
+    """의존성이 없으면 venv 파이썬으로 자기 자신을 다시 실행한다."""
+    if _deps_ready():
+        return
+    if os.environ.get("PHOTONEST_REEXEC") != "1":
+        venv_python = _venv_python()
+        if venv_python is not None:
+            os.environ["PHOTONEST_REEXEC"] = "1"  # 무한 재실행 방지
+            try:
+                os.execv(str(venv_python),
+                         [str(venv_python), str(Path(__file__).resolve())]
+                         + sys.argv[1:])
+            except OSError:
+                pass  # 이 셸에서 실행할 수 없는 venv (Termux ↔ proot 등)
+    _explain_and_exit()
+
+
+_bootstrap()
 
 from backend import db  # noqa: E402
 from backend.immich import auth, state  # noqa: E402

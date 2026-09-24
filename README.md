@@ -23,6 +23,7 @@ Mac / Windows / Linux / 라즈베리파이에서 동작하며, 같은 와이파�
 | 📦 구글 테이크아웃 | Takeout 폴더를 넣으면 사이드카 JSON의 촬영시각·GPS 자동 인식 |
 | 📱 폰 업로드 | QR로 접속하는 모바일 업로드 페이지 — 원본 무손실 전송, 중복 자동 스킵, HEIC 지원 |
 | 🔄 자동 백업 | 내장 WebDAV 서버 — PhotoSync/FolderSync 앱 연결 시 "와이파이 진입하면 자동 업로드" |
+| 📲 Immich 앱 호환 | Immich 공식 안드로이드·iOS 앱과 TV 앱으로도 업로드·열람 (자체 앱은 그대로 유지) |
 
 ## 설치 (한 번만)
 
@@ -244,6 +245,14 @@ backend/
   local_llm.py # OpenAI 호환 LLM(LM Studio/Ollama/OpenRouter) 어댑터
   openrouter.py# OpenRouter 연동 + 키 검증 + 추천 모델 프리셋
   settings.py  # 엔진 선택·OpenRouter 키/모델 영구 저장 (data/app/settings.json)
+  immich/      # Immich 공식 앱 호환 계층 (/immich/api) — 아래 "Immich 앱으로 쓰기"
+    state.py   #   UUID 매핑 · SHA-1 체크섬 · 동기화 델타(그림자 테이블)
+    auth.py    #   단일 계정 로그인 + 세션 토큰 + API 키
+    dto.py     #   PhotoNest 행 → Immich 응답/동기화 객체 변환
+    query.py   #   이 계층이 쓰는 media/앨범/인물 조회
+    sync.py    #   POST /sync/stream (폰 앱이 기기 DB를 채우는 NDJSON 델타)
+    routes.py  #   서버정보·인증·사용자·에셋·업로드
+    library.py #   앨범·타임라인·검색·인물·지도
 frontend/
   index.html / styles.css
   app.js       # 상태·API·라우터·멀티선택·앨범 모달
@@ -276,6 +285,71 @@ PC 화면의 **📱 폰 연결** 탭에서 모든 안내를 볼 수 있습니다
    **PhotoSync**(iOS/Android) 또는 **FolderSync**(Android)에서 WebDAV 대상으로 주소를 넣고
    "지정 와이파이 연결 시 자동 전송"을 켜면, 폰이 집 와이파이에 들어올 때마다
    새 사진만 백그라운드로 올라갑니다. 업로드분은 `photos/MobileBackup/`에 저장·자동 색인됩니다.
+
+## Immich 앱으로 쓰기 (공식 안드로이드 · iOS · TV 앱)
+
+자체 개발 앱은 그대로 두고, [Immich](https://github.com/immich-app/immich) 공식 앱으로도
+같은 라이브러리에 업로드하고 열어볼 수 있습니다. PhotoNest가 Immich 서버 API를 흉내내는
+호환 계층(`backend/immich/`)을 `/immich/api` 아래에 따로 제공합니다.
+
+### 1. 계정 만들기 (한 번만)
+
+Immich 앱은 이메일/비밀번호 로그인을 전제로 만들어져 있어서 이 계층만은 계정이 필요합니다.
+(PhotoNest 본체는 무인증 그대로입니다.)
+
+```bash
+.venv/bin/python -m scripts.immich_account
+# 이메일은 아무 주소나 됩니다 (예: me@home.lan) — 메일을 보내지 않습니다
+# 끝나면 접속 주소와 TV 앱용 API 키를 출력합니다
+```
+
+이미 만든 설정은 `--show`로 확인하고, API 키만 새로 발급하려면 `--rotate-key`를 씁니다.
+계정 정보는 `data/app/immich_auth.json`(권한 0600)에 저장되며 비밀번호는 PBKDF2 해시로만
+보관합니다. 환경변수 `IMMICH_EMAIL` / `IMMICH_PASSWORD` / `IMMICH_API_KEY`가 있으면 그쪽이 우선입니다.
+
+### 2. 앱 연결
+
+다른 기기에서 붙으려면 서버를 `HOST=0.0.0.0 ./run.sh`로 띄워야 합니다.
+
+| 앱 | 서버 주소 | 인증 |
+|---|---|---|
+| Immich 안드로이드 / iOS | `http://<서버IP>:8765` | 위에서 정한 이메일 + 비밀번호 |
+| TV 앱 등 주소 탐색을 안 하는 클라이언트 | `http://<서버IP>:8765/immich` | `x-api-key`에 API 키 |
+
+폰 앱은 주소만 넣으면 됩니다 — `/.well-known/immich`이 실제 API 주소(`/immich/api`)로 안내합니다.
+TV 앱은 입력한 주소 뒤에 `/api`를 스스로 붙이므로 `/immich`까지 넣어 주세요.
+
+### 3. 첫 연결 때 기다려야 하는 것 — SHA-1 체크섬
+
+Immich 앱은 폰 안의 사진을 직접 SHA-1 해서 서버 값과 맞춰보고 "이미 백업됨"을 판정합니다.
+PhotoNest의 기존 중복 해시(크기 + 앞 4MB의 md5)로는 대체할 수 없어서, 계정을 만들면
+라이브러리 전체의 SHA-1을 백그라운드에서 천천히 계산합니다.
+**아직 계산되지 않은 사진은 앱에 보이지 않습니다.** 진행률은 이렇게 확인합니다.
+
+```bash
+curl -s http://localhost:8765/api/immich/status
+# {"configured":true, ..., "checksums":{"running":true,"pending":1240,"done":860}}
+```
+
+### 되는 것 / 안 되는 것
+
+| | 상태 |
+|---|---|
+| 사진·동영상 업로드 (원본 무손실, 중복 자동 스킵) | ✅ |
+| 타임라인 · 앨범 만들기/이름변경/삭제/사진 추가·제거 | ✅ |
+| 즐겨찾기 · 설명(코멘트) · 위치 수정 | ✅ |
+| 휴지통 (삭제 / 복원 / 비우기) | ✅ |
+| 원본 보기 · 동영상 재생 (탐색 지원, 트랜스코딩 없이 원본) | ✅ |
+| 자연어 검색 — 앱의 검색창이 PhotoNest의 의미 검색을 그대로 씀 | ✅ |
+| 지도 · 촬영 지명별 둘러보기 | ✅ |
+| 인물 — TV 앱의 REST(`/people`)로는 제공 | ⚠️ 폰 앱의 인물 탭은 비어 있음 |
+| 전체화면 미리보기 화질 | ⚠️ 1440px (Immich 원본 서버와 동일하진 않음) |
+| 파트너 공유 · 메모리 · 스택 · 태그 · 공유링크 | ❌ 빈 화면 (PhotoNest에 대응 개념 없음) |
+| 실시간 갱신(socket.io) | ❌ 미구현 — 앱을 내렸다 올리면 동기화됩니다 |
+| 업로드 시 보낸 즐겨찾기 표시 | ❌ 색인 전이라 반영 안 됨 (앱에서 다시 누르면 됩니다) |
+
+서버는 앱에 버전 `2.5.0`으로 자신을 알립니다. 그래야 앱이 이 계층이 구현한 V1 동기화
+형식만 요청합니다(`IMMICH_REPORT_VERSION`으로 바꿀 수 있지만 권장하지 않습니다).
 
 ## 구글 포토 백업 (Google Takeout 자동 처리)
 

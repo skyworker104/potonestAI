@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import appdist, db, indexer, llm, remote, search, storage, upload
+from . import appdist, db, immich, indexer, llm, remote, search, storage, upload
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -20,6 +20,10 @@ app.include_router(upload.router)
 app.include_router(storage.router)
 app.include_router(appdist.router)
 app.include_router(remote.router)
+# Immich 공식 앱 호환 계층 — /immich/api 아래에 따로 붙는다 (경로 충돌 방지).
+# 앱은 /.well-known/immich을 보고 그 주소를 찾아간다 (backend/immich/__init__.py).
+app.include_router(immich.router)
+app.include_router(immich.discovery)
 
 
 @app.get("/upload")
@@ -89,6 +93,7 @@ class TakeoutAlbumApply(BaseModel):
 @app.on_event("startup")
 def startup():
     db.init()
+    immich.init()  # 호환 테이블 + SHA-1 체크섬 backfill 시작
     threading.Thread(target=indexer.build_index, daemon=True).start()
     # 로컬 LLM이 떠 있으면 백그라운드로 미리 깨워(콜드 로딩) 첫 응답 지연 방지
     threading.Thread(target=_warmup_llm, daemon=True).start()

@@ -55,6 +55,10 @@ def parse_ack(ack: str):
 
 def refresh_all():
     """스트림을 열기 전에 현재 라이브러리 상태를 그림자 테이블에 반영한다."""
+    # 체크섬이 없는 사진은 동기화 대상이 아니다 — 이 요청 안에서 조금이라도
+    # 채워 두면 색인 직후 첫 동기화에서 사진이 빠지는 일이 줄어든다.
+    state.backfill_batch()
+    state.start_backfill()  # 남은 분량은 백그라운드가 이어받는다
     acct = auth.account()
     state.refresh("user", {
         state.USER_ID: query.fingerprint(acct.get("email"), acct.get("name")),

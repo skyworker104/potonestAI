@@ -348,6 +348,21 @@ def test_new_photo_appears_after_ack(client, token, env):
     assert kinds.count("AssetExifV1") == 1
 
 
+def test_stream_hashes_pending_photos_itself(client, token, env):
+    """색인이 끝난 직후 체크섬이 아직 없어도 그 동기화에서 사진이 나와야 한다.
+
+    백그라운드 backfill만 의존하면 첫 동기화에 사진이 몇 장 빠진다 — 실제로
+    라이브 서버에서 2장 중 1장만 내려가는 것을 확인해 고친 지점이다.
+    """
+    _ack_everything(client, token, _stream(client, token))
+    _make_jpeg(env["photos"] / "late.jpg", (11, 22, 33))
+    indexer.build_index()          # 색인만 — 체크섬은 일부러 계산하지 않는다
+    assert state.checksum(state.media_id_for_path("late.jpg")) is None
+    kinds = [line["type"] for line in _stream(client, token)]
+    assert kinds.count("AssetV1") == 1
+    assert kinds.count("AssetExifV1") == 1
+
+
 def test_trashing_a_photo_sets_deleted_at_not_a_delete_event(client, token):
     _ack_everything(client, token, _stream(client, token))
     items = client.post("/immich/api/search/metadata", json={},

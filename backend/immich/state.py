@@ -310,6 +310,25 @@ def prune_checksums():
     return len(gone)
 
 
+def backfill_batch(limit=64):
+    """체크섬을 limit장까지 그 자리에서 계산한다. 계산한 장수를 돌려준다.
+
+    백그라운드 스레드만으로는 "색인이 끝나기 전에 backfill이 먼저 끝나버려
+    첫 동기화에 사진이 몇 장 빠지는" 경쟁이 생긴다. 동기화 직전에 이걸 불러
+    그 요청 안에서 수렴을 앞당긴다 — 장수를 묶어 요청이 늘어지지 않게 한다.
+    """
+    batch, _total = _pending_checksums(limit)
+    done = 0
+    for media_id, rel, sig in batch:
+        try:
+            record_checksum(media_id, rel, sig,
+                            sha1_of_file(indexer.PHOTOS_DIR / rel))
+            done += 1
+        except OSError:
+            pass
+    return done
+
+
 def _backfill_loop():
     """데몬 스레드 본체 — DB/디스크 오류로 죽더라도 흔적을 남기고 조용히 멈춘다."""
     try:

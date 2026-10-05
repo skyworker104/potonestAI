@@ -111,6 +111,13 @@ def _ladder(plan, place_name, english_fn):
     if has_date:
         yield ["date_removed"], {**plan, "date_from": None, "date_to": None}
 
+    # GPS로 정확히 잡힌 장소 + 내용어 → 내용 조건을 빼고 그 장소 사진 전체.
+    # 장소 쪽을 빼면 지명이 이미지 검색어로 섞여 무관한 사진이 나온다
+    # (실사례: '지리산 단풍' → 60장 중 지리산권 3장). 위치가 내용보다 확실하다.
+    if has_bbox and content:
+        yield ["content_removed"], {**plan, "search_text": None,
+                                    "top_k": max(plan.get("top_k") or 0, 1000)}
+
     # 장소 필터 자체를 제거 — 내용어가 남아 있을 때만
     # (내용도 날짜도 없이 장소만 빼면 전체 사진이 쏟아지므로 하지 않는다)
     if (has_bbox or has_ptext) and content:

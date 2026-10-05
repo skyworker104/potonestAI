@@ -356,6 +356,7 @@ RELAX_PHRASES = {
     "date_widened": "기간을 조금 넓혀서",
     "date_removed": "날짜 조건 없이",
     "place_to_meta": "위치정보 대신 앨범·폴더 이름 기준으로",
+    "content_removed": "사진 내용 조건은 빼고 그 장소에서 찍은 사진 전체로",
     "place_removed": "장소 조건을 빼고",
     "english_retry": "표현을 바꿔서",
 }

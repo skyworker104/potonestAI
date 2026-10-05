@@ -137,3 +137,14 @@ def test_weak_image_hits_stay_when_they_are_the_only_evidence(weak_search, monke
     monkeypatch.setattr(search, "_ocr_matches", lambda *a: [])
     # 실재 주제도 이 점수대일 수 있어(실측 '강아지' 0.260) 버리지 않는다 — 답변이 밝힌다
     assert [r["id"] for r in search.find("강아지")] == ["p0", "p1", "p2"]
+
+
+def test_volcano_counts_as_a_big_mountain(gaz, monkeypatch):
+    # 한라산은 GeoNames에서 MT가 아니라 VLC — 기본 반경(4km)이면 대부분 놓친다
+    assert landmarks._radius("T", "VLC") == 12.0
+
+
+def test_stale_cache_is_rebuilt(gaz):
+    # 옛 형식(버전 없음) 캐시에 잘못된 반경이 남아 있어도 다시 만든다
+    (gaz / "landmarks.json").write_text('{"지리산": [[35.3, 127.7, 4.0, "산·지형"]]}')
+    assert landmarks.resolve("지리산")["radius_km"] == 12.0

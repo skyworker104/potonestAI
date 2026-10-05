@@ -22,10 +22,12 @@ import zipfile
 from . import db, geoname
 
 CACHE = geoname.DIR / "landmarks.json"
+# 반경표·포함 지형이 바뀌면 올린다 — 옛 캐시(예: 한라산 4km)를 버리고 다시 만든다
+CACHE_VERSION = 2
 
 # (feature class, code) → 반경 km. 코드가 없으면 class 기본값.
 _RADIUS = {
-    ("T", "MTS"): 25.0, ("T", "MT"): 12.0, ("T", "PK"): 8.0, ("T", "HLL"): 3.0,
+    ("T", "MTS"): 25.0, ("T", "MT"): 12.0, ("T", "VLC"): 12.0,  # 한라산은 VLC ("T", "PK"): 8.0, ("T", "HLL"): 3.0,
     ("T", "ISL"): 8.0, ("T", "ISLS"): 15.0, ("T", "BCH"): 2.0, ("T", "VAL"): 5.0,
     ("T", None): 4.0,
     ("L", "PRK"): 8.0, ("L", "RES"): 10.0, ("L", None): 4.0,
@@ -81,7 +83,8 @@ def _build():
                     if len(key) >= 2:
                         index.setdefault(key, []).append(entry)
     try:
-        CACHE.write_text(json.dumps(index, ensure_ascii=False))
+        CACHE.write_text(json.dumps({"v": CACHE_VERSION, "index": index},
+                                    ensure_ascii=False))
     except OSError:
         pass  # 캐시 실패는 다음 기동에 다시 만들면 된다
     return index
@@ -90,7 +93,11 @@ def _build():
 def _index():
     if _cache["index"] is None:
         try:
-            _cache["index"] = json.loads(CACHE.read_text()) if CACHE.exists() else _build()
+            data = json.loads(CACHE.read_text()) if CACHE.exists() else None
+            if isinstance(data, dict) and data.get("v") == CACHE_VERSION:
+                _cache["index"] = data["index"]
+            else:
+                _cache["index"] = _build()
         except Exception:  # 손상된 캐시·데이터 없음 — 기능만 비활성
             _cache["index"] = {}
     return _cache["index"]

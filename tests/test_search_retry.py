@@ -236,3 +236,17 @@ def test_no_date_no_nearest_time():
     results, relaxed = search_retry.run_with_retry(
         make_plan(search_text="dog"), finder, english_fn=lambda t: "dog")
     assert results == [] and relaxed == []
+
+
+def test_gps_place_keeps_place_and_drops_content():
+    """GPS로 잡힌 장소 + 내용어 0장 → 장소를 빼지 말고 내용 조건을 뺀다.
+
+    실사례 '지리산 단풍': 장소를 빼면 '지리산 단풍'이 이미지 검색어가 되어
+    60장 중 지리산권 3장. 지리산 사진은 182장 있었다.
+    """
+    plan = make_plan(search_text="단풍", bbox=(35.2, 35.4, 127.6, 127.9))
+    finder = StubFinder(lambda kw: kw["bbox"] is not None and kw["search_text"] is None,
+                        [{"id": "a", "score": None}])
+    results, relaxed = search_retry.run_with_retry(plan, finder, place_name="지리산")
+    assert relaxed == ["content_removed"]
+    assert finder.calls[-1]["top_k"] >= 1000  # 위치만 남으면 그 그룹 전체

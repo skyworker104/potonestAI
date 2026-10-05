@@ -10,7 +10,10 @@ function openLightbox(index) {
   const it = state.currentItems[index];
   // 검색 결과 열람 = 암묵적 긍정 신호 → 검색 스킬 학습에 반영 (실패 무시)
   if (state.view === "search") {
-    api.post("/api/feedback/view", { media_id: it.id }).catch(() => {});
+    api.post("/api/feedback/view", {
+      media_id: it.id,
+      session_id: typeof SESSION_ID !== "undefined" ? SESSION_ID : undefined,
+    }).catch(() => {});
   }
   const media = $("#lb-media");
   media.innerHTML =

@@ -309,6 +309,57 @@ def detect_refine(message):
     return re.sub(r"\s+", " ", remainder).strip()
 
 
+# 직전 결과를 부정하며 새로 요청 — "아니 지리산에서 찍은 사진 보여 줘".
+# 부정어만 있으면("아니야") 피드백(detect_feedback)이 맡는다.
+_CORRECTION = re.compile(
+    r"^\s*(?:아니(?:야|요|고|라|지)?|아냐|그거\s*말고|그게\s*아니라|그거\s*아니고|말고)"
+    r"[\s,.!~]+"
+)
+
+
+def detect_correction(message):
+    """'아니 ~' 꼴이면 부정어를 뗀 나머지 요청, 아니면 None.
+
+    나머지가 다시 피드백("아니 틀렸어")이면 교정 요청이 아니라 피드백이다 — None.
+    """
+    m = _CORRECTION.match(message or "")
+    if not m:
+        return None
+    rest = message[m.end():].strip()
+    if not rest or detect_feedback(rest):
+        return None
+    return rest
+
+
+# 이어지는 질문 — 바꿀 조건만 말하고 나머지는 직전 검색을 잇는다.
+#   "그럼 작년 거는?", "제주도는?", "동영상도?", "대신 고양이로"
+_FOLLOW_HEAD = re.compile(r"^\s*(?:그럼|그러면|그리고|대신|이번엔|이번에는|그\s*다음엔?)\s*")
+_FOLLOW_TAIL = re.compile(r"(?:은|는|도)(?:\s*어때요?|요)?\s*[?？]?\s*$")
+_FILLER = re.compile(r"^(?:(?:거|것|건|게|걸)(?:는|은|도|만|로|으로|를)?|어때요?)$")
+_SEARCH_VERB = re.compile(r"(찾아|보여|검색|골라)")
+
+
+def detect_followup(message):
+    """이어지는 질문이면 바꿀 조건만 남긴 문장(빈 문자열 가능), 아니면 None.
+
+    호출부는 직전 검색이 있을 때만 이것을 적용해야 한다.
+    """
+    text = message or ""
+    head = _FOLLOW_HEAD.match(text)
+    tokens = re.sub(r"[?？!.~,]", " ", text[head.end():] if head else text).split()
+    has_filler = any(_FILLER.match(t) for t in tokens)
+    compact = re.sub(r"\s+", "", text)
+    short_tail = (len(compact) <= 12 and _FOLLOW_TAIL.search(text)
+                  and not _SEARCH_VERB.search(text))
+    if not (head or has_filler or short_tail):
+        return None
+    tokens = [t for t in tokens if not _FILLER.match(t)]
+    if tokens:  # 마지막 말의 보조사 떼기 — "제주도는" → "제주도", "고양이도" → "고양이"
+        last = re.sub(r"(?:은요|는요|도요|은|는|도|으로|로)$", "", tokens[-1])
+        tokens[-1] = last if len(last) >= 2 else tokens[-1]
+    return " ".join(tokens)
+
+
 # 긍정 확인 표현 — 검색 직후의 짧은 단독 발화만 긍정 피드백으로 본다
 _POSITIVE = re.compile(
     r"(맞아|맞네|맞았|그거야|그거지|좋아|좋네|잘\s*찾|딱이야|딱이네|딱맞|완벽|고마워|고맙|감사|굿|나이스)"

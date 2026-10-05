@@ -7,6 +7,24 @@ let speaking = false;
 
 // 대화 맥락(후속 질문용) — 최근 턴만 유지
 const chatHistory = [];
+
+// 대화 세션 — 서버가 탭마다 직전 검색(피드백·좁히기·이어 묻기 기준)을 따로 둔다.
+// LAN의 http 페이지는 보안 컨텍스트가 아니라 crypto.randomUUID가 없을 수 있다.
+const SESSION_ID = (() => {
+  const make = () => (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  try {
+    let id = sessionStorage.getItem("pn-session");
+    if (!id) {
+      id = make();
+      sessionStorage.setItem("pn-session", id);
+    }
+    return id;
+  } catch (_) {
+    return make();
+  }
+})();
 const MAX_HISTORY_TURNS = 6;
 
 /* ---------------- 채팅 ---------------- */
@@ -30,6 +48,7 @@ async function sendToAI(message) {
     const data = await api.post("/api/chat", {
       message,
       history: chatHistory.slice(-MAX_HISTORY_TURNS),
+      session_id: SESSION_ID,
     });
     thinking.remove();
     const aiMsg = addMsg(data.reply, "ai");
@@ -49,7 +68,7 @@ async function sendToAI(message) {
     if (badge) {
       const b = document.createElement("span");
       b.className = "engine-badge";
-      b.textContent = badge + (data.engine === "local-llm" ? " · 스킬로 저장됨" : "");
+      b.textContent = badge;
       aiMsg.appendChild(b);
     }
     chatHistory.push({ role: "user", content: message });

@@ -2,6 +2,7 @@
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import List, Optional
 
@@ -39,6 +40,7 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatTurn]] = None
+    session_id: Optional[str] = None  # 대화 세션(브라우저 탭) — 직전 검색 상태를 나눈다
 
 
 class AlbumCreate(BaseModel):
@@ -347,8 +349,23 @@ def clean_duplicates():
 # 사진 내용으로 쓰이는 말 — 같은 이름의 지형이 GeoNames에 있어도 지명으로 보지 않는다
 _CONTENT_WORDS = frozenset(ko for ko, _ in llm.KO_EN)
 
-# 직전 검색 기억 (단일 로컬 사용자 — 피드백 교정에 사용)
-_last_search = {}
+# 대화 세션별 직전 검색 — 피드백·좁히기·이어 묻기의 기준. 예전엔 서버 전체에
+# 하나라 기기·탭이 여럿이면 남의 검색에 피드백이 붙었다.
+_sessions = OrderedDict()
+_MAX_SESSIONS = 32
+_LLM_ENGINES = ("local-llm", "claude", "openrouter", "gemini")
+
+
+def _session(session_id):
+    """세션의 직전 검색 상태 dict (없으면 새로). 오래된 세션부터 버린다."""
+    sid = session_id or "default"
+    state = _sessions.pop(sid, None)
+    if state is None:
+        state = {}
+    _sessions[sid] = state
+    while len(_sessions) > _MAX_SESSIONS:
+        _sessions.popitem(last=False)
+    return state
 
 
 # 완화 라벨 → 답변 문구 조각 (search_retry가 적용한 완화를 사용자에게 설명)
@@ -462,8 +479,11 @@ def _combine_ids(base_ids, person_ids):
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
                 hour_from=None, hour_to=None, place_text=None, base_ids=None,
-                skill_id=None, date_label=None, dropped=()):
+                skill_id=None, date_label=None, dropped=(), state=None,
+                notes=(), pending_skill=None):
     from . import search_retry
+    if state is None:
+        state = _session(None)
 
     person_ids = db.person_media_ids(person["id"]) if person else None
     only_ids = _combine_ids(base_ids, person_ids)
@@ -523,8 +543,8 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         reply += (f" 다만 '{search_text}'와 확실히 일치하는 사진은 없어서,"
                   " 비슷해 보이는 사진이라 정확하지 않을 수 있어요.")
 
-    # _last_search에는 사용자가 요청한 원 조건을 저장 (피드백 교정은 원 의도 기준)
-    _last_search.update(
+    # 세션 상태에는 사용자가 요청한 원 조건을 저장 (피드백 교정은 원 의도 기준)
+    state.update(
         query=message, place=place, bbox=bbox, search_text=search_text,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, hour_from=hour_from, hour_to=hour_to,
@@ -532,8 +552,12 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         skill_id=skill_id,      # 피드백을 귀속시킬 스킬
         view_credited=False,    # 열람 신호는 검색당 1회만 반영
         refined=refined,        # 정제 검색이면 긍정 피드백 때 스킬로 저장하지 않음
+        date_label=date_label,  # 이어 묻기에서 기간을 물려줄 때 설명용
+        # LLM 해석은 바로 스킬로 저장하지 않는다 — 사용자가 맞다고 하거나 결과를
+        # 열어 봤을 때만(틀린 해석이 학습되던 문제: '지리산'을 사진 내용으로 저장)
+        pending_skill=pending_skill if results and not low_conf else None,
     )
-    explanation = _explain(
+    explanation = list(notes) + _explain(
         place=place, place_text=place_text, search_text=search_text,
         date_from=date_from, date_to=date_to, date_label=date_label,
         hour_from=hour_from, hour_to=hour_to, person=person,
@@ -555,23 +579,44 @@ def chat(req: ChatRequest):
 
     history = [{"role": t.role, "content": t.content} for t in (req.history or [])]
     message = req.message
+    ls = _session(req.session_id)
+    notes = []
+
+    # -2) "아니 ~ / 그거 말고 ~" — 직전 결과를 부정하며 새로 요청. 부정어만 떼고
+    #     새 검색으로 처리하고, 직전 검색에 쓴 스킬은 틀린 것으로 기록한다.
+    #     (예전엔 "아니야 ~"가 '틀렸어' 피드백으로 새어 위치 재검색이 됐다)
+    corrected = llm.detect_correction(message)
+    if corrected is not None:
+        message = corrected
+        if ls.get("query"):
+            if ls.get("skill_id"):
+                skills.penalize(ls["skill_id"], 1.0)
+            notes.append("↩️ 직전 결과를 고쳐 달라는 말로 보고 새로 찾았어요")
 
     # -1) "그 중에서 ~" — 직전 검색 결과 안에서 좁히기 (연쇄 정제 가능).
     #     피드백 감지보다 먼저: "~것만 보여줘"가 피드백 'only'로 새는 것 방지.
     base_ids = None
     remainder = llm.detect_refine(message)
-    if remainder is not None and _last_search.get("result_ids"):
+    if remainder is not None and ls.get("result_ids"):
         if not remainder:
             return {"reply": "직전 결과에서 무엇으로 좁힐까요? 예: \"밤에 찍은 것만\", \"강아지 나온 것만\"",
                     "intent": "chat", "engine": "instant", "results": []}
-        base_ids = _last_search["result_ids"]
+        base_ids = ls["result_ids"]
         message = remainder  # 이후 해석은 정제 조건만으로
 
     # 0) 교정 피드백이면 직전 검색을 위치 기준으로 다시
-    if base_ids is None:
+    if base_ids is None and corrected is None:
         fb = llm.detect_feedback(message)
-        if fb and _last_search.get("query"):
-            return _handle_feedback(message, fb)
+        if fb and ls.get("query"):
+            return _handle_feedback(message, fb, ls)
+
+    # 0.5) 이어 묻기 — "그럼 작년 거는?", "제주도는?" — 바꾼 조건만 해석하고
+    #      나머지는 직전 검색에서 물려받는다(아래 inherit).
+    follow = None
+    if base_ids is None and corrected is None and ls.get("query"):
+        follow = llm.detect_followup(message)
+        if follow is not None:
+            message = follow
 
     meta = llm.quick_meta(message)
     if meta["greeting"]:
@@ -597,7 +642,7 @@ def chat(req: ChatRequest):
         core = cleaned
     else:
         dropped = []
-    core_has_content = bool(skills._strip_terms(core)) if place else True
+    has_content = bool(skills._strip_terms(core))
 
     search_text = None
     place_text = None
@@ -605,7 +650,9 @@ def chat(req: ChatRequest):
     skill_used = None
     skill_id = None
 
-    if not place or core_has_content:
+    learn_from = None  # 스킬 후보로 삼을 LLM 해석의 원문 (확인 뒤에만 저장)
+    # 장소만 남았거나 이어 묻기에서 바꾼 조건이 날짜 등뿐이면 LLM이 필요 없다
+    if has_content or (not place and follow is None):
         target = core
         skill, sim = skills.match(target)
         if skill:
@@ -634,16 +681,11 @@ def chat(req: ChatRequest):
             if not person and parsed.get("person"):
                 person = db.match_person_name(parsed["person"])
             engine = parsed.get("engine")
-            # LLM류 엔진의 해석은 스킬로 학습 — place_text도 함께 캐싱해
-            # 재사용 시 지명이 의미검색으로 새지 않게 한다.
-            # 정제 조각("~것만" 등)은 재사용 가치가 없어 저장하지 않는다.
-            if base_ids is None and engine in ("local-llm", "claude", "openrouter", "gemini") \
-                    and (search_text or place_text):
-                sk = skills.add(target, search_text, parsed.get("media_type"),
-                                place_text=place_text)
-                if sk:
-                    skill_used = sk["label"]
-                    skill_id = sk["id"]
+            # LLM 해석은 스킬 '후보'로만 둔다(_run_search가 세션에 보관). 사용자가
+            # 맞다고 하거나 결과를 열어 보면 그때 저장 — 틀린 해석이 학습되지 않게.
+            # 정제 조각("~것만")·이어 묻기 조각("작년 거는?")은 재사용 가치가 없다.
+            if base_ids is None and follow is None and engine in _LLM_ENGINES:
+                learn_from = target
 
     # LLM·스킬이 상황 말을 내용어로 남겼으면 같은 기준으로 뺀다 (LLM 해석은 흔들린다)
     if search_text:
@@ -654,14 +696,8 @@ def chat(req: ChatRequest):
             search_text = rest or None
             dropped += [w for w in more if w not in dropped]
 
-    # 상황 말뿐인 요청("가족여행 사진")에서 LLM이 내용을 비우면 조건이 하나도
-    # 없어 라이브러리 전체가 나온다 — 그럴 땐 상황 말이라도 내용으로 쓴다.
-    if base_ids is None and not _has_other_condition(
-            place, place_text, date_from, date_to, hour_from, person, media_type,
-            search_text):
-        occasion = llm.strip_occasion(message)[1]
-        if occasion:
-            search_text = occasion[0]
+    # 스킬 후보는 장소 해석 전의 지명 문자열로 저장한다 (재사용 때 다시 푼다)
+    skill_place_text = place_text
 
     # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
     if place_text and not place:
@@ -672,13 +708,57 @@ def chat(req: ChatRequest):
         if known:
             place, bbox, place_text = known, known["bbox"], None
 
+    date_label = meta["date_span"]
+    if follow is not None:
+        inherited = []
+        if not place and not place_text:
+            if ls.get("place"):
+                place, bbox = ls["place"], ls["place"]["bbox"]
+                inherited.append("장소")
+            elif ls.get("place_text"):
+                place_text = ls["place_text"]
+                inherited.append("장소")
+        if not (date_from or date_to) and (ls.get("date_from") or ls.get("date_to")):
+            date_from, date_to = ls.get("date_from"), ls.get("date_to")
+            date_label = ls.get("date_label")
+            inherited.append("기간")
+        if hour_from is None and ls.get("hour_from") is not None:
+            hour_from, hour_to = ls["hour_from"], ls["hour_to"]
+            inherited.append("시간대")
+        if not search_text and ls.get("search_text"):
+            search_text = ls["search_text"]
+            inherited.append("사진 내용")
+        if not person and ls.get("person"):
+            person = ls["person"]
+            inherited.append("인물")
+        if not media_type and ls.get("media_type"):
+            media_type = ls["media_type"]
+            inherited.append("종류")
+        if inherited:
+            notes.append(f"🔗 직전 검색에 이어서: {'·'.join(inherited)}은(는) 그대로 썼어요")
+
+    # 상황 말뿐인 요청("가족여행 사진")에서 LLM이 내용을 비우면 조건이 하나도
+    # 없어 라이브러리 전체가 나온다 — 그럴 땐 상황 말이라도 내용으로 쓴다.
+    if base_ids is None and not _has_other_condition(
+            place, place_text, date_from, date_to, hour_from, person, media_type,
+            search_text):
+        occasion = llm.strip_occasion(message)[1]
+        if occasion:
+            search_text = occasion[0]
+
+    pending_skill = None
+    if learn_from and (search_text or skill_place_text):
+        pending_skill = dict(question=learn_from, search_text=search_text,
+                             media_type=media_type, place_text=skill_place_text)
+
     return _run_search(
         message, search_text=search_text, bbox=bbox, place=place,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
         base_ids=base_ids, skill_id=skill_id,
-        date_label=meta["date_span"], dropped=dropped,
+        date_label=date_label, dropped=dropped, state=ls, notes=notes,
+        pending_skill=pending_skill,
     )
 
 
@@ -689,16 +769,21 @@ def _has_other_condition(place, place_text, date_from, date_to, hour_from,
                 or person or media_type or content)
 
 
-def _handle_feedback(message, fb):
+def _handle_feedback(message, fb, ls):
     """직전 검색에 대한 피드백 처리 — 긍정은 학습 강화, 부정은 교정+약화."""
     from . import skills, places
-    ls = _last_search
 
     # 긍정 — 사용한 스킬을 강화하고, 스킬 없이 찾은 검색은 지금 스킬로 확정 저장
     if fb["type"] == "positive":
         sid = ls.get("skill_id")
         if sid:
             skills.reinforce(sid, 1.0)
+        elif ls.get("pending_skill"):   # LLM 해석 후보 — 사용자가 맞다고 했다
+            sk = skills.add(**ls["pending_skill"])
+            if sk:
+                skills.reinforce(sk["id"], 1.0)
+                ls["skill_id"] = sk["id"]
+            ls["pending_skill"] = None
         elif not ls.get("refined") and (
                 ls.get("search_text") or ls.get("place") or ls.get("place_text")):
             sk = skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"),
@@ -730,6 +815,7 @@ def _handle_feedback(message, fb):
                     person=ls.get("person"), hour_from=ls.get("hour_from"),
                     hour_to=ls.get("hour_to"),
                     place_text=parsed.get("place_text"), engine="reparse",
+                    state=ls,
                 )
                 result["reply"] = "다시 해석해서 찾아봤어요. " + result["reply"]
                 return result
@@ -741,11 +827,12 @@ def _handle_feedback(message, fb):
         place=place, date_from=ls.get("date_from"), date_to=ls.get("date_to"),
         media_type=ls.get("media_type"), person=ls.get("person"),
         hour_from=ls.get("hour_from"), hour_to=ls.get("hour_to"), engine="location",
+        state=ls,
     )
     # 피드백을 스킬로 학습 → 다음에 같은 류 질의는 위치로 처리
     sk = skills.add(ls["query"], ls.get("search_text"), ls.get("media_type"), place=place)
     if sk:
-        _last_search["skill_id"] = sk["id"]  # 이어지는 피드백을 이 스킬에 귀속
+        ls["skill_id"] = sk["id"]  # 이어지는 피드백을 이 스킬에 귀속
     n = len(result["results"])
     result["reply"] = (f"네, {place['name']} 위치 정보를 기준으로 다시 찾았어요. "
                        f"이제 {n}장이에요. 앞으로 비슷한 검색도 위치로 정확히 찾을게요.")
@@ -755,6 +842,7 @@ def _handle_feedback(message, fb):
 
 class ViewFeedback(BaseModel):
     media_id: str
+    session_id: Optional[str] = None
 
 
 @app.post("/api/feedback/view")
@@ -765,9 +853,17 @@ def feedback_view(req: ViewFeedback):
     검색당 1회만 반영 — 슬라이드쇼·연속 열람으로 과대 학습되는 것 방지.
     """
     from . import skills
-    ls = _last_search
-    if (req.media_id in (ls.get("result_ids") or [])
-            and not ls.get("view_credited") and ls.get("skill_id")):
+    ls = _session(req.session_id)
+    if req.media_id not in (ls.get("result_ids") or []) or ls.get("view_credited"):
+        return {"ok": True, "credited": False}
+    if not ls.get("skill_id") and ls.get("pending_skill"):
+        # LLM 해석 후보를 이제 저장 — 결과를 열어 봤다는 건 해석이 맞았을 가능성이
+        # 높다. (낮은 신뢰도 검색은 애초에 후보로 남기지 않는다 — _run_search)
+        sk = skills.add(**ls["pending_skill"])
+        ls["pending_skill"] = None
+        if sk:
+            ls["skill_id"] = sk["id"]
+    if ls.get("skill_id"):
         ls["view_credited"] = True
         skills.reinforce(ls["skill_id"], 0.3)
         return {"ok": True, "credited": True}

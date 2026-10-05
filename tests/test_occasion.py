@@ -63,7 +63,7 @@ def test_occasion_only_request_does_not_return_everything(monkeypatch):
         "engine": "openrouter"})
     monkeypatch.setattr(main, "_run_search",
                         lambda message, **kw: seen.update(kw) or {"results": []})
-    main._last_search.clear()
+    main._sessions.clear()
     main.chat(main.ChatRequest(message="가족여행 사진", history=[]))
     assert seen["search_text"] == "가족여행"
     assert seen["dropped"] == []  # 뺀 게 아니라 내용으로 썼다

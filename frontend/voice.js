@@ -33,6 +33,17 @@ async function sendToAI(message) {
     });
     thinking.remove();
     const aiMsg = addMsg(data.reply, "ai");
+    // 검색을 어떻게 해석했는지 (날짜·장소·내용·뺀 말) — 화면에만, 음성으로는 안 읽는다
+    if ((data.explanation || []).length) {
+      const ul = document.createElement("ul");
+      ul.className = "explain";
+      for (const line of data.explanation) {
+        const li = document.createElement("li");
+        li.textContent = line;
+        ul.appendChild(li);
+      }
+      aiMsg.appendChild(ul);
+    }
     // 처리 방식 배지 (스킬 즉시 처리/LLM 등)
     const badge = ENGINE_BADGE[data.engine];
     if (badge) {

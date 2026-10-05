@@ -105,6 +105,8 @@ place_text는 촬영 '장소·지명'(도시·동네·나라·명소)이 발화�
 산·섬·해수욕장·공원·사찰·궁궐·타워 같은 **고유한 명소 이름도 지명**이다
 ("지리산", "한라산", "해운대", "불국사", "남산타워" → place_text). 이미지 검색은
 고유명사를 모르므로 이런 이름이 search_text에 들어가면 엉뚱한 사진이 나온다.
+여행·놀러·나들이·휴가·출장·가족여행 같은 말은 촬영 '상황'이지 사진에 보이는 내용이
+아니므로 search_text에 넣지 않는다(장소·날짜는 각 필드로).
 앞 결과를 부정하는 말("아니", "그거 말고")이 붙어도 뒤의 요청을 같은 규칙으로 해석한다.
 인물 이름만으로 찾는 요청이면(다른 내용어가 없으면) search_text는 null로 둔다.
 date_from과 date_to는 상대날짜 표현("작년","지난달" 등)이 있어도 계산하지 말고
@@ -136,6 +138,14 @@ reply는 한국어 한 문장(개수 언급 금지).
 예시6)
 입력: 아니 지리산에서 찍은 사진 보여 줘
 출력: {"intent":"search","search_text":null,"place_text":"지리산","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"지리산에서 찍은 사진을 찾아볼게요."}
+
+예시7)
+입력: 작년 일본 여행가서 찍은 사진 찾아줘
+출력: {"intent":"search","search_text":null,"place_text":"일본","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"작년 일본에서 찍은 사진을 찾아볼게요."}
+
+예시8)
+입력: 제주도 가족여행 가서 찍은 바다 사진
+출력: {"intent":"search","search_text":"바다","place_text":"제주도","date_from":null,"date_to":null,"media_type":null,"person":null,"reply":"제주도에서 찍은 바다 사진을 찾아볼게요."}
 
 직전 대화 맥락이 있으면 후속 요청의 조건을 이어서 누적 반영한다."""
 

@@ -358,6 +358,7 @@ RELAX_PHRASES = {
     "place_to_meta": "위치정보 대신 앨범·폴더 이름 기준으로",
     "content_removed": "사진 내용 조건은 빼고 그 장소에서 찍은 사진 전체로",
     "place_removed": "장소 조건을 빼고",
+    "nearest_time": "요청한 시기와 가장 가까운 시기의 사진으로",
     "english_retry": "표현을 바꿔서",
 }
 
@@ -390,6 +391,47 @@ def _interpretation(place, place_text, search_text):
     return (", ".join(parts) + " 보고") if parts else ""
 
 
+def _day(iso):
+    return iso[:10].replace("-", ".") if iso else None
+
+
+def _explain(*, place, place_text, search_text, date_from, date_to, date_label,
+             hour_from, hour_to, person, media_type, dropped, relaxed,
+             low_conf, refined):
+    """검색을 어떻게 해석했는지 한 줄씩 — 화면에 답변과 함께 표시(음성으로는 안 읽음).
+
+    정상으로 찾은 경우에도 무엇을 조건으로 썼고 무엇을 뺐는지 보여 줘야
+    사용자가 해석이 맞는지 판단하고 고쳐 말할 수 있다.
+    """
+    lines = []
+    if refined:
+        lines.append("🧺 범위: 직전 검색 결과 안에서")
+    if date_from or date_to:
+        rng = f"{_day(date_from) or '처음'} ~ {_day(date_to) or '지금'}"
+        lines.append(f"📅 기간: '{date_label}' → {rng}" if date_label else f"📅 기간: {rng}")
+    if hour_from is not None:
+        lines.append(f"🕐 시간대: {hour_from}시 ~ {hour_to}시")
+    if place and place.get("radius_km"):
+        lines.append(f"📍 장소: '{place['name']}' → {place['kind']}, "
+                     f"GPS 반경 약 {place['radius_km']:g}km 안에서 찍은 사진")
+    elif place:
+        lines.append(f"📍 장소: '{place['name']}' → GPS 위치가 그 지역 안인 사진")
+    elif place_text:
+        lines.append(f"📍 장소: '{place_text}' → 앨범·폴더·지명에 이 이름이 있는 사진")
+    if person:
+        lines.append(f"👤 인물: {person['name']}님이 나온 사진")
+    if media_type == "video":
+        lines.append("🎬 종류: 동영상만")
+    if search_text:
+        lines.append(f"🔎 사진 내용: '{search_text}' → 이미지 의미 검색"
+                     + (" (확실히 일치하는 사진은 없어 비슷한 사진)" if low_conf else ""))
+    for w in dropped:
+        lines.append(f"➖ '{w}' → 촬영 상황을 말하는 표현이라 검색 조건에서 뺐어요")
+    if relaxed:
+        lines.append("🔄 조건 완화: " + ", ".join(RELAX_PHRASES.get(l, l) for l in relaxed))
+    return lines
+
+
 def _promote_landmark(search_text, place_text):
     """LLM·스킬이 '사진 내용'으로 분류한 명소 이름을 장소로 옮긴다.
 
@@ -420,7 +462,7 @@ def _combine_ids(base_ids, person_ids):
 def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
                 hour_from=None, hour_to=None, place_text=None, base_ids=None,
-                skill_id=None):
+                skill_id=None, date_label=None, dropped=()):
     from . import search_retry
 
     person_ids = db.person_media_ids(person["id"]) if person else None
@@ -491,9 +533,15 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         view_credited=False,    # 열람 신호는 검색당 1회만 반영
         refined=refined,        # 정제 검색이면 긍정 피드백 때 스킬로 저장하지 않음
     )
+    explanation = _explain(
+        place=place, place_text=place_text, search_text=search_text,
+        date_from=date_from, date_to=date_to, date_label=date_label,
+        hour_from=hour_from, hour_to=hour_to, person=person,
+        media_type=media_type, dropped=dropped, relaxed=relaxed,
+        low_conf=low_conf, refined=refined)
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
-            "relaxed": relaxed, "results": results,
+            "relaxed": relaxed, "results": results, "explanation": explanation,
             "interpretation": {
                 "place": place["name"] if place else place_text,
                 "place_kind": (place.get("kind") or "region") if place
@@ -540,6 +588,15 @@ def chat(req: ChatRequest):
     place = places.detect(message) or landmarks.detect(message, exclude=_CONTENT_WORDS)
     bbox = place["bbox"] if place else None
     core = place["residual"] if place else message
+    # 상황 말(여행·놀러·휴가…)은 사진에 보이는 내용이 아니다. 다른 조건이 있으면
+    # 뺀다 — 장소·기간과 AND로 묶이면 그 사진 대부분이 빠진다(일본 236장 → 2장).
+    # 상황 말뿐이면 남긴다(빼면 아무 조건도 없이 전체가 나온다).
+    cleaned, dropped = llm.strip_occasion(core)
+    if dropped and _has_other_condition(place, None, date_from, date_to, hour_from,
+                                        person, media_type, skills._strip_terms(cleaned)):
+        core = cleaned
+    else:
+        dropped = []
     core_has_content = bool(skills._strip_terms(core)) if place else True
 
     search_text = None
@@ -549,7 +606,7 @@ def chat(req: ChatRequest):
     skill_id = None
 
     if not place or core_has_content:
-        target = core if place else message
+        target = core
         skill, sim = skills.match(target)
         if skill:
             search_text, place_text = _promote_landmark(
@@ -588,6 +645,15 @@ def chat(req: ChatRequest):
                     skill_used = sk["label"]
                     skill_id = sk["id"]
 
+    # LLM·스킬이 상황 말을 내용어로 남겼으면 같은 기준으로 뺀다 (LLM 해석은 흔들린다)
+    if search_text:
+        rest, more = llm.strip_occasion(search_text)
+        rest = skills._strip_terms(rest)
+        if more and _has_other_condition(place, place_text, date_from, date_to,
+                                         hour_from, person, media_type, rest):
+            search_text = rest or None
+            dropped += [w for w in more if w not in dropped]
+
     # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
     if place_text and not place:
         known = places.detect(place_text)
@@ -603,7 +669,15 @@ def chat(req: ChatRequest):
         person=person, engine=engine, skill_used=skill_used,
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
         base_ids=base_ids, skill_id=skill_id,
+        date_label=meta["date_span"], dropped=dropped,
     )
+
+
+def _has_other_condition(place, place_text, date_from, date_to, hour_from,
+                         person, media_type, content):
+    """상황 말을 빼도 검색 조건이 남는가."""
+    return bool(place or place_text or date_from or date_to or hour_from is not None
+                or person or media_type or content)
 
 
 def _handle_feedback(message, fb):

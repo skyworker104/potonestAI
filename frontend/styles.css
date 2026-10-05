@@ -105,6 +105,12 @@ body.chat-hidden #chat-panel { display: none; }
 .msg.ai.thinking { color: var(--muted); font-style: italic; }
 
 /* 처리 방식 배지 */
+.explain {
+  margin: 6px 0 0; padding: 6px 0 0; list-style: none;
+  border-top: 1px solid rgba(139, 145, 163, 0.25);  /* --muted 반투명 */
+  font-size: 12px; line-height: 1.5; color: var(--muted);
+}
+.explain li { overflow-wrap: anywhere; }
 .engine-badge {
   display: block; margin-top: 5px; font-size: 11px; color: var(--muted);
 }

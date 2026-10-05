@@ -30,6 +30,10 @@ JSON 스키마:
   이미지 검색이 엉뚱한 결과(발음 비슷한 사물)를 낸다.
 - 산·섬·해수욕장·공원·사찰·궁궐 같은 고유한 명소 이름도 지명이다:
   "지리산에서 찍은" → place_text="지리산", search_text=null.
+- 여행·놀러·나들이·휴가·출장·가족여행 같은 말은 촬영 '상황'이지 사진에 보이는
+  내용이 아니다. search_text에 넣지 말 것: "작년 일본 여행가서 찍은 사진" →
+  place_text="일본", search_text=null. "제주도 가족여행 가서 찍은 바다" →
+  place_text="제주도", search_text="바다".
 - '작년 여름', '지난달', '3년 전' 같은 상대 날짜는 반드시 오늘 날짜 기준으로 환산해 date_from/date_to를 채울 것.
   예) 오늘이 2026년이면 '3년 전' → date_from=2023-01-01, date_to=2023-12-31T23:59:59.
   '재작년'=2년 전, '작년'=1년 전. 날짜 조건이 있으면 절대 비우지 말 것.
@@ -256,6 +260,31 @@ def _fallback_parse(message: str):
         "media_type": media_type,
         "reply": f"'{label}' 관련 {'영상' if media_type == 'video' else '사진'}을 찾아볼게요.",
     }
+
+
+# 여행·나들이 같은 '상황' 말 — 사진에 보이는 내용이 아니라 촬영 계기다.
+# 장소·날짜와 AND로 묶으면 안 된다(실사례: "작년 일본 여행가서 찍은 사진" →
+# 일본 사진 236장 중 이미지가 '여행'처럼 보이는 2장만). 캠핑·소풍·결혼식처럼
+# 사진에 그대로 보이는 행사는 여기 넣지 않는다.
+_OCCASION = re.compile(
+    r"(?P<w>(?:가족|신혼|수학|졸업|해외|국내|배낭|단체|커플|우정|회사)?\s*"
+    r"(?:여행|놀러|나들이|휴가|출장|바캉스|투어))"
+    r"(?:\s*(?:갔다\s*온|갔을\s*때|갔던|가서|간|다녀온|다녀와서|와서|온"
+    r"|했을\s*때|했던|하면서|중에|중|때|에서|에|을|를|으로|로|가))?"
+)
+# 상황 말 없이 홀로 쓰인 이동 표현 ("바다에 가서 찍은")
+_MOVE = re.compile(r"(?<![가-힣])(?:갔다\s*온|갔을\s*때|갔던|가서|다녀온|다녀와서)(?![가-힣])")
+
+
+def strip_occasion(text):
+    """상황 말을 뺀 (나머지 문장, 뺀 말 목록). 없으면 (원문, [])."""
+    if not text:
+        return text, []
+    dropped = [re.sub(r"\s+", "", m.group("w")) for m in _OCCASION.finditer(text)]
+    if not dropped:
+        return text, []
+    rest = _MOVE.sub(" ", _OCCASION.sub(" ", text))
+    return re.sub(r"\s+", " ", rest).strip(), list(dict.fromkeys(dropped))
 
 
 # 직전 검색 결과를 좁히는 정제 지시어 — "그 중에서 밤에 찍은 것만".

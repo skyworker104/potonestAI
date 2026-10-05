@@ -33,7 +33,19 @@ _BUILTIN = {
     ("전주",): (35.78, 35.88, 127.08, 127.18),
     ("경기", "경기도"): (37.00, 38.30, 126.50, 127.80),
     ("괌", "guam"): (13.20, 13.70, 144.60, 145.00),
-    ("일본", "도쿄", "오사카"): (34.00, 36.00, 135.00, 140.00),
+    # 나라 전체는 사각형 하나로 잡으면 한국이 들어가므로 여러 상자로 덮는다.
+    # (예전 단일 상자 34~36°N·135~140°E는 나가노·홋카이도·규슈를 놓쳤다 —
+    #  실사례: 일본 GPS 사진 236장 중 67장 누락)
+    ("일본",): [
+        (30.90, 34.00, 129.40, 132.10),   # 규슈
+        (33.70, 34.75, 129.10, 129.90),   # 쓰시마·이키 (부산 35.0°N 이북과 분리)
+        (32.70, 35.70, 130.80, 135.50),   # 혼슈 서부·시코쿠 (울릉도 130.9°E는 37.5°N)
+        (33.40, 41.60, 135.00, 142.20),   # 혼슈 중·동부
+        (41.30, 45.60, 139.30, 146.00),   # 홋카이도
+        (24.00, 28.60, 122.90, 131.40),   # 오키나와·난세이 제도
+    ],
+    ("도쿄",): (35.50, 35.90, 139.40, 140.00),
+    ("오사카",): (34.50, 34.80, 135.30, 135.70),
 }
 
 
@@ -52,7 +64,12 @@ def _all_places():
     for names, bbox in _BUILTIN.items():
         places.append((names[0], list(names), bbox))
     for name, info in _load_user().items():
-        places.append((name, info.get("aliases", [name]), tuple(info["bbox"])))
+        bbox = info["bbox"]
+        if bbox and isinstance(bbox[0], list):   # 여러 상자
+            bbox = [tuple(b) for b in bbox]
+        else:
+            bbox = tuple(bbox)
+        places.append((name, info.get("aliases", [name]), bbox))
     return places
 
 
@@ -73,8 +90,11 @@ def detect(text):
 
 
 def in_bbox(lat, lon, bbox):
+    """bbox: (위도min, 위도max, 경도min, 경도max) 하나 또는 그 목록(여러 상자)."""
     if lat is None or lon is None:
         return False
+    if bbox and isinstance(bbox[0], (list, tuple)):
+        return any(in_bbox(lat, lon, b) for b in bbox)
     return bbox[0] <= lat <= bbox[1] and bbox[2] <= lon <= bbox[3]
 
 

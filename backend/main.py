@@ -344,6 +344,9 @@ def clean_duplicates():
 
 # ---------- 대화 / 검색 ----------
 
+# 사진 내용으로 쓰이는 말 — 같은 이름의 지형이 GeoNames에 있어도 지명으로 보지 않는다
+_CONTENT_WORDS = frozenset(ko for ko, _ in llm.KO_EN)
+
 # 직전 검색 기억 (단일 로컬 사용자 — 피드백 교정에 사용)
 _last_search = {}
 
@@ -356,6 +359,51 @@ RELAX_PHRASES = {
     "place_removed": "장소 조건을 빼고",
     "english_retry": "표현을 바꿔서",
 }
+
+
+def _quoted_obj(word):
+    """'지리산'을 / '바다'를 — 따옴표로 감싸고 받침에 맞는 목적격 조사를 붙인다."""
+    last = word[-1] if word else ""
+    if "가" <= last <= "힣":
+        josa = "을" if (ord(last) - 0xAC00) % 28 else "를"
+    else:
+        josa = "을(를)"
+    return f"'{word}'{josa}"
+
+
+def _interpretation(place, place_text, search_text):
+    """검색을 어떻게 해석했는지 — "'지리산'을 장소(GPS 반경 약 12km)로 보고".
+
+    사용자가 해석이 틀렸는지 바로 알고 교정할 수 있게 답변 앞에 붙인다.
+    해석할 조건이 없으면(날짜·인물만 등) 빈 문자열.
+    """
+    parts = []
+    if place and place.get("radius_km"):          # 명소 사전(landmarks)
+        parts.append(f"{_quoted_obj(place['name'])} 장소(GPS 반경 약 {place['radius_km']:g}km)로")
+    elif place:                                     # 지역 사전(places)
+        parts.append(f"{_quoted_obj(place['name'])} 지역(GPS 위치)으로")
+    elif place_text:
+        parts.append(f"{_quoted_obj(place_text)} 장소 이름(앨범·폴더·지명)으로")
+    if search_text:
+        parts.append(f"{_quoted_obj(search_text)} 사진 내용으로")
+    return (", ".join(parts) + " 보고") if parts else ""
+
+
+def _promote_landmark(search_text, place_text):
+    """LLM·스킬이 '사진 내용'으로 분류한 명소 이름을 장소로 옮긴다.
+
+    실사례: "아니 지리산에서 찍은 사진 보여 줘" → LLM이 search_text="지리산"
+    (같은 문장이 장소로 분류될 때도 있다 — 해석이 매번 다르다). 이미지 모델은
+    고유명사를 모르므로 지명이 내용어로 남으면 무관한 사진만 나온다.
+    반환: (search_text, place_text)
+    """
+    from . import landmarks, skills
+    if not search_text or place_text:
+        return search_text, place_text
+    hit = landmarks.detect(search_text, exclude=_CONTENT_WORDS)
+    if not hit:
+        return search_text, place_text
+    return skills._strip_terms(hit["residual"]) or None, hit["name"]
 
 
 def _combine_ids(base_ids, person_ids):
@@ -390,7 +438,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         try:
             from . import embedder
             P = embedder.params()
-            quality_bar = P["score_threshold"] + 0.5 * P["score_margin"]
+            quality_bar = search.quality_bar(P)
             if not embedder.needs_english():  # CLIP-ONNX는 find가 이미 영어 변환
                 english_fn = llm._ko_to_en
         except Exception:
@@ -403,11 +451,18 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
 
     n = len(results)
     refined = base_ids is not None
-    loc = f"{place['name']} 지역(위치 기준)에서 " if place \
-        else (f"'{place_text}'에서 " if place_text else "")
+    how = _interpretation(place, place_text, search_text)
+    # 이미지 근거만 있고 최고점이 기준선 근처 → 결과는 보여주되 솔직히 밝힌다
+    scores = [r["score"] for r in results if r.get("score") is not None]
+    low_conf = bool(search_text and quality_bar is not None and scores
+                    and max(scores) < quality_bar)
     if n == 0:
-        reply = "직전 결과 안에는 그 조건에 맞는 사진이 없어요." if refined \
-            else "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
+        if refined:
+            reply = "직전 결과 안에는 그 조건에 맞는 사진이 없어요."
+        elif how:
+            reply = f"{how} 찾아봤지만 맞는 사진이 없어요. 다른 말로 다시 말씀해 주시겠어요?"
+        else:
+            reply = "조건에 맞는 사진을 찾지 못했어요. 다른 말로 다시 말씀해 주시겠어요?"
     elif relaxed == ["nearest_time"]:
         reply = f"요청하신 시기의 사진이 없어서, 가장 가까운 시기의 사진 {n}장을 보여드릴게요."
     elif relaxed:
@@ -417,8 +472,13 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         reply = f"그 중에서 {n}장으로 좁혔어요."
     elif person and not search_text and not place:
         reply = f"'{person['name']}'님이 나온 사진 {n}장을 찾았어요."
+    elif how:
+        reply = f"{how} 찾았어요. 모두 {n}장이에요."
     else:
-        reply = f"{loc}모두 {n}장을 찾았어요."
+        reply = f"모두 {n}장을 찾았어요."
+    if low_conf and n:
+        reply += (f" 다만 '{search_text}'와 확실히 일치하는 사진은 없어서,"
+                  " 비슷해 보이는 사진이라 정확하지 않을 수 있어요.")
 
     # _last_search에는 사용자가 요청한 원 조건을 저장 (피드백 교정은 원 의도 기준)
     _last_search.update(
@@ -432,12 +492,17 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     )
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
-            "relaxed": relaxed, "results": results}
+            "relaxed": relaxed, "results": results,
+            "interpretation": {
+                "place": place["name"] if place else place_text,
+                "place_kind": (place.get("kind") or "region") if place
+                else ("name" if place_text else None),
+                "content": search_text, "low_confidence": low_conf}}
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    from . import skills, places
+    from . import landmarks, skills, places
 
     history = [{"role": t.role, "content": t.content} for t in (req.history or [])]
     message = req.message
@@ -468,8 +533,10 @@ def chat(req: ChatRequest):
     hour_from, hour_to = meta["hour_from"], meta["hour_to"]
     person = db.match_person_name(message)
 
-    # 지명 감지 → 위치(GPS) 검색. 지명 뺀 나머지(residual)로 내용 의도 분석
-    place = places.detect(message)
+    # 지명 감지 → 위치(GPS) 검색. 지명 뺀 나머지(residual)로 내용 의도 분석.
+    # 지역 사전에 없으면 명소(산·공원·사찰 등) 사전 — LLM의 들쭉날쭉한 분류에
+    # 맡기지 않고 여기서 먼저 잡는다.
+    place = places.detect(message) or landmarks.detect(message, exclude=_CONTENT_WORDS)
     bbox = place["bbox"] if place else None
     core = place["residual"] if place else message
     core_has_content = bool(skills._strip_terms(core)) if place else True
@@ -484,8 +551,9 @@ def chat(req: ChatRequest):
         target = core if place else message
         skill, sim = skills.match(target)
         if skill:
-            search_text = skill.get("search_text")
-            place_text = skill.get("place_text")   # 지명은 재사용 시에도 메타 필터로
+            search_text, place_text = _promote_landmark(
+                skill.get("search_text"),
+                skill.get("place_text"))           # 지명은 재사용 시에도 메타 필터로
             media_type = media_type or skill.get("media_type")
             if skill.get("place") and not place:   # 스킬이 학습한 위치 선호
                 place = skill["place"]; bbox = place["bbox"]
@@ -500,8 +568,8 @@ def chat(req: ChatRequest):
             if parsed.get("intent") == "chat" and not place and base_ids is None:
                 return {"reply": parsed.get("reply") or "무엇을 도와드릴까요?",
                         "intent": "chat", "engine": parsed.get("engine"), "results": []}
-            search_text = parsed.get("search_text")
-            place_text = parsed.get("place_text")
+            search_text, place_text = _promote_landmark(
+                parsed.get("search_text"), parsed.get("place_text"))
             media_type = media_type or parsed.get("media_type")
             date_from = parsed.get("date_from") or date_from
             date_to = parsed.get("date_to") or date_to
@@ -522,6 +590,9 @@ def chat(req: ChatRequest):
     # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
     if place_text and not place:
         known = places.detect(place_text)
+        if not known:
+            lm = landmarks.resolve(place_text)
+            known = dict(lm, residual="") if lm else None
         if known:
             place, bbox, place_text = known, known["bbox"], None
 

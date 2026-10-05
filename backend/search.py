@@ -79,6 +79,15 @@ def embed_comment(text):
         return None
 
 
+def quality_bar(P):
+    """이 미만의 이미지 최고점은 '주제를 확실히 찾지 못함' (embedder.params 기준).
+
+    clip-onnx 실측: 있는 주제 top1 ~0.27-0.29, 없는 주제 ~0.23 — 그 중간.
+    겹치는 구간이라 이것만으로 결과를 버리지는 않는다(실재 주제 '강아지' 0.260).
+    """
+    return P["score_threshold"] + 0.5 * P["score_margin"]
+
+
 def _in_date_range(item, date_from, date_to):
     if not (date_from or date_to):
         return True
@@ -408,6 +417,7 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     # 핵심 주제어(subject)로 인코딩 — 문장 전체를 넣으면 임베딩이 희석돼
     # 점수가 임계 근처로 떨어짐 ("강아지 사진 찾아줘" 0.10 vs "강아지" 0.13).
     image_hits = {}  # id → score
+    image_top = None
     ids, emb = db.load_embeddings(embedder.model_id(), embedder.dim())
     pos = {mid: i for i, mid in enumerate(ids)}
     idxs = [pos[it["id"]] for it in candidates if it["id"] in pos]
@@ -417,7 +427,7 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         qv = embedder.encode_text([qtext])[0]
         scores = emb[idxs] @ qv
         order = np.argsort(-scores)
-        top = float(scores[order[0]])
+        top = image_top = float(scores[order[0]])
         if top >= P["score_threshold"]:
             cutoff = max(P["score_threshold"], top - P["score_margin"])
             for oi in order[:top_k]:
@@ -438,6 +448,14 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     caption_hits = _caption_matches(
         raw_query or search_text, allowed_ids, by_id, top_k
     )
+
+    # 이미지 최고점이 기준선 근처뿐이면(모델이 그 주제를 사실상 모름) 글자로
+    # 확인된 근거(앨범명·지명·OCR·코멘트·캡션)가 있을 때 이미지 쪽을 버린다.
+    # 실사례 '지리산': OCR로 지리산 표지판 1장 + CLIP 0.240~0.251 무관 9장.
+    # 근거가 이미지뿐이면 남겨 두고, 낮은 신뢰도는 답변에서 밝힌다(main).
+    if image_top is not None and image_top < quality_bar(P) and (
+            named_hits or comment_hits or ocr_hits or caption_hits):
+        image_hits = {}
 
     # 5) 병합 — 코멘트/캡션은 문장 설명이므로 강한 매칭은 상위에 오도록.
     #    문장 유사도(0.42~1.0)·OCR 일치비율(0~1)을 백엔드 이미지 점수대로 사상.

@@ -178,7 +178,7 @@ def login(body: LoginBody, request: Request):
     device = "%s %s" % (request.headers.get("deviceType", "unknown"),
                         request.headers.get("deviceModel", ""))
     token = auth.create_session(device.strip())
-    return {
+    resp = JSONResponse({
         "accessToken": token,
         "userId": state.USER_ID,
         "userEmail": acct["email"],
@@ -187,7 +187,23 @@ def login(body: LoginBody, request: Request):
         "isOnboarded": True,
         "profileImagePath": "",
         "shouldChangePassword": False,
-    }
+    })
+    # 안드로이드 앱은 새 로그인 때 토큰을 네이티브 HTTP 클라이언트에 직접 넘기지
+    # 않는다 — 정식 서버처럼 응답의 Set-Cookie를 쿠키 저장소가 받아 두고, 이후
+    # 요청에 그 쿠키만 실어 보낸다. 쿠키가 없으면 다음 요청부터 401이다.
+    # path는 "/"여야 한다: API가 /immich/api 아래라도 앱은 호스트 단위로 쓴다.
+    values = {"immich_access_token": token, "immich_auth_type": "password",
+              "immich_is_authenticated": "true"}
+    for name, http_only in _AUTH_COOKIES:
+        resp.set_cookie(name, values[name], max_age=_COOKIE_MAX_AGE, path="/",
+                        httponly=http_only, samesite="lax")
+    return resp
+
+
+_COOKIE_MAX_AGE = 400 * 24 * 3600  # 정식 서버·앱과 같은 400일
+_AUTH_COOKIES = (("immich_access_token", True),   # (이름, httpOnly)
+                 ("immich_auth_type", True),
+                 ("immich_is_authenticated", False))
 
 
 @router.post("/auth/logout")
@@ -195,7 +211,10 @@ def logout(request: Request):
     token = auth.request_token(request)
     if token:
         auth.drop_session(token)
-    return {"successful": True, "redirectUri": "/"}
+    resp = JSONResponse({"successful": True, "redirectUri": "/"})
+    for name, _http_only in _AUTH_COOKIES:
+        resp.delete_cookie(name, path="/")
+    return resp
 
 
 @router.post("/auth/validateToken")

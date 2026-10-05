@@ -103,6 +103,7 @@ def token(client):
     r = client.post("/immich/api/auth/login",
                     json={"email": EMAIL, "password": PASSWORD})
     assert r.status_code == 200, r.text
+    client.cookies.clear()  # 로그인 쿠키를 지워 각 테스트가 자격증명을 직접 싣게 한다
     return r.json()["accessToken"]
 
 
@@ -172,6 +173,16 @@ def test_token_is_accepted_from_cookie_and_user_token_header(client, token):
     client.cookies.clear()
     r = client.get("/immich/api/users/me", headers={"x-immich-user-token": token})
     assert r.status_code == 200
+
+
+def test_login_sets_the_cookie_the_app_relies_on(client):
+    # 앱은 토큰을 직접 싣지 않고 로그인 응답의 Set-Cookie만 받아 쓴다
+    auth.set_account(EMAIL, PASSWORD)
+    r = client.post("/immich/api/auth/login",
+                    json={"email": EMAIL, "password": PASSWORD})
+    assert r.cookies.get("immich_access_token") == r.json()["accessToken"]
+    assert "path=/" in r.headers["set-cookie"].lower()
+    assert client.get("/immich/api/users/me").status_code == 200  # 쿠키만으로
 
 
 def test_logout_with_cookie_invalidates_the_token(client, token):

@@ -545,6 +545,8 @@ def _run_pipeline(force):
         # 최초 1회 GeoNames 다운로드(~12MB), 이후 순수 계산이라 빠름.
         try:
             from . import geoname
+            if geoname.available() and geoname.take_rebuilt():
+                db.clear_place_names()  # 지명 형식이 바뀜 — 전부 다시 매긴다
             pending = db.media_missing_place()
             if pending and geoname.available():
                 _state["phase"] = "지명 매핑"

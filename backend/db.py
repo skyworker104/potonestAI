@@ -548,6 +548,12 @@ def media_missing_place():
     return [(r["id"], r["lat"], r["lon"]) for r in rows]
 
 
+def clear_place_names():
+    """저장된 지명을 모두 지운다 — 다음 색인에서 새 형식으로 다시 매긴다."""
+    with conn() as c:
+        c.execute("UPDATE media SET place_name=NULL WHERE place_name IS NOT NULL")
+
+
 def set_place_name(media_id, name):
     """역지오코딩 결과 저장. 지명 없음도 ''로 기록해 재조회를 막는다."""
     with conn() as c:

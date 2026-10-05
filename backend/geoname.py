@@ -30,9 +30,11 @@ _SOURCES = [
      "cities500.txt"),
 ]
 MAX_KM = 15.0  # 가장 가까운 지명이 이보다 멀면(바다 등) 지명 없음 처리
+# 지명 문자열 구성이 바뀌면 올린다 — 색인을 다시 만들고 사진 지명을 다시 매긴다
+INDEX_VERSION = 2
 
 _HANGUL = re.compile(r"[가-힣]")
-_cache = {"loaded": False, "lat": None, "lon": None, "names": None}
+_cache = {"loaded": False, "lat": None, "lon": None, "names": None, "rebuilt": False}
 
 
 def _download(url, dst):
@@ -55,25 +57,34 @@ def _ko_names(alts, limit=4):
 
 
 def _parse_kr(lines):
-    """KR.txt → 거주지(P) 행. 리 단위는 한글 대안명이 없는 경우가 있어
-    시·도(ADM1) 한글명을 병기해 최소한 광역 지명으로는 걸리게 한다."""
-    adm1 = {}  # admin1 코드 → 시·도 한글명
+    """KR.txt → 거주지(P) 행. 리 단위는 한글 대안명이 없는 경우가 많아
+    (실사례: 지리산 사진 182장이 'Kŏrim 경남 Chungsan Pukch'on'처럼 로마자뿐)
+    상위 행정구역 한글명 — 읍·면·동(ADM3), 시·군·구(ADM2), 시·도(ADM1) — 을
+    병기해 "산청 사진", "시천면에서 찍은" 같은 질의가 걸리게 한다."""
+    adm = {}  # (admin1, admin2[, admin3]) 코드 → 한글명들
     parsed = []
     for line in lines:
         f = line.rstrip("\n").split("\t")
         if len(f) < 11:
             continue
-        if f[6] == "A" and f[7] == "ADM1":
+        if f[6] == "A" and f[7] in ("ADM1", "ADM2", "ADM3"):
             kos = _ko_names(f[3], limit=2)
-            if kos:
-                adm1[f[10]] = kos[0]
+            if not kos:
+                continue
+            depth = {"ADM1": 1, "ADM2": 2, "ADM3": 3}[f[7]]
+            codes = tuple(f[10 + i] if len(f) > 10 + i else "" for i in range(depth))
+            if all(codes):
+                adm[codes] = kos
         elif f[6] == "P":
             parsed.append(f)
     rows = []
     for f in parsed:
         kos = _ko_names(f[3])
-        label = " ".join(dict.fromkeys(kos + [f[1]] +
-                                       ([adm1[f[10]]] if f[10] in adm1 else [])))
+        codes = [f[10 + i] if len(f) > 10 + i else "" for i in range(3)]
+        admin = []
+        for depth in (3, 2, 1):  # 좁은 행정구역부터
+            admin += adm.get(tuple(codes[:depth]), []) if all(codes[:depth]) else []
+        label = " ".join(dict.fromkeys(kos + [f[1]] + admin))
         try:
             rows.append((label, float(f[4]), float(f[5])))
         except ValueError:
@@ -111,6 +122,7 @@ def _build():
     lon = np.array([r[2] for r in rows], np.float32)
     np.savez(DIR / "index.npz", lat=lat, lon=lon)
     (DIR / "names.json").write_text(json.dumps(names, ensure_ascii=False))
+    (DIR / "index_version").write_text(str(INDEX_VERSION))
     return lat, lon, names
 
 
@@ -118,13 +130,17 @@ def _load():
     if _cache["loaded"]:
         return
     try:
-        idx, nj = DIR / "index.npz", DIR / "names.json"
-        if idx.exists() and nj.exists():
+        idx, nj, ver = DIR / "index.npz", DIR / "names.json", DIR / "index_version"
+        current = ver.exists() and ver.read_text().strip() == str(INDEX_VERSION)
+        if idx.exists() and nj.exists() and current:
             d = np.load(idx)
             lat, lon = d["lat"], d["lon"]
             names = json.loads(nj.read_text())
         else:
+            # 옛 형식 색인이 있었다면 사진 지명도 옛 형식 — 호출부가 다시 매긴다
+            had_old = idx.exists()
             lat, lon, names = _build()
+            _cache["rebuilt"] = had_old
         _cache.update(loaded=True, lat=lat, lon=lon, names=names)
     except Exception:  # 네트워크 없음 등 — 기능 전체를 조용히 비활성
         _cache.update(loaded=True, lat=None, lon=None, names=None)
@@ -133,6 +149,14 @@ def _load():
 def available():
     _load()
     return _cache["lat"] is not None
+
+
+def take_rebuilt():
+    """색인이 새 형식으로 다시 만들어졌으면 True를 한 번만 돌려준다
+    (저장된 사진 지명을 지우고 다시 매기라는 신호)."""
+    _load()
+    flag, _cache["rebuilt"] = _cache["rebuilt"], False
+    return flag
 
 
 def lookup(lat, lon, k=4):
@@ -161,4 +185,5 @@ def lookup(lat, lon, k=4):
         for t in names[i].split():
             if t not in tokens:
                 tokens.append(t)
-    return " ".join(tokens)[:120] or None
+    # 동·리 이름 뒤에 행정구역 한글명이 붙어 길어졌다 — 넉넉히 둔다
+    return " ".join(tokens)[:240] or None

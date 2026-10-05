@@ -31,9 +31,10 @@ _SOURCES = [
 ]
 MAX_KM = 15.0  # 가장 가까운 지명이 이보다 멀면(바다 등) 지명 없음 처리
 # 지명 문자열 구성이 바뀌면 올린다 — 색인을 다시 만들고 사진 지명을 다시 매긴다
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
 _HANGUL = re.compile(r"[가-힣]")
+_ADMIN_SUFFIX = re.compile(r"(시|군|구|읍|면|동|가)$")
 _cache = {"loaded": False, "lat": None, "lon": None, "names": None, "rebuilt": False}
 
 
@@ -69,6 +70,11 @@ def _parse_kr(lines):
             continue
         if f[6] == "A" and f[7] in ("ADM1", "ADM2", "ADM3"):
             kos = _ko_names(f[3], limit=2)
+            if f[7] != "ADM1":
+                # 시·군·읍·면은 '산청군'처럼 접미사 붙은 이름만 — '산청' 질의는
+                # 부분일치로 걸린다. 짧은 꼴('고양')을 넣으면 검색의 한 글자
+                # 오타 허용이 '고양이'를 '고양'으로 잡는다(실측: 고양이 60 → 495장).
+                kos = [k for k in _ko_names(f[3], limit=8) if _ADMIN_SUFFIX.search(k)][:1]
             if not kos:
                 continue
             depth = {"ADM1": 1, "ADM2": 2, "ADM3": 3}[f[7]]

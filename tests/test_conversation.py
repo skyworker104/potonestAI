@@ -47,7 +47,7 @@ def test_follow_up_keeps_previous_conditions(chat):
     assert plan["bbox"] is not None            # 제주 위치 물려받음
     assert plan["search_text"] == "고양이"      # 내용 물려받음
     assert plan["date_from"]                   # 바꾼 조건(작년) 적용
-    assert any(l.startswith("🔗 직전 검색에 이어서: 장소·사진 내용") for l in r["explanation"])
+    assert any(l == "🔗 직전 검색에 이어서: 장소·사진 내용은 그대로 썼어요" for l in r["explanation"])
 
 
 def test_sessions_do_not_share_state(chat):

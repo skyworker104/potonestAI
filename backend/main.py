@@ -380,6 +380,14 @@ RELAX_PHRASES = {
 }
 
 
+def _topic(word):
+    """주제 조사 — '장소는', '기간은' (받침 기준, 한글 아니면 병기)."""
+    last = word[-1] if word else ""
+    if "가" <= last <= "힣":
+        return word + ("은" if (ord(last) - 0xAC00) % 28 else "는")
+    return word + "은(는)"
+
+
 def _quoted_obj(word):
     """'지리산'을 / '바다'를 — 따옴표로 감싸고 받침에 맞는 목적격 조사를 붙인다."""
     last = word[-1] if word else ""
@@ -735,7 +743,7 @@ def chat(req: ChatRequest):
             media_type = ls["media_type"]
             inherited.append("종류")
         if inherited:
-            notes.append(f"🔗 직전 검색에 이어서: {'·'.join(inherited)}은(는) 그대로 썼어요")
+            notes.append(f"🔗 직전 검색에 이어서: {_topic('·'.join(inherited))} 그대로 썼어요")
 
     # 상황 말뿐인 요청("가족여행 사진")에서 LLM이 내용을 비우면 조건이 하나도
     # 없어 라이브러리 전체가 나온다 — 그럴 땐 상황 말이라도 내용으로 쓴다.

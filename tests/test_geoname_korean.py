@@ -42,8 +42,14 @@ def gdir(tmp_path, monkeypatch):
 def test_romanized_village_gets_korean_admin_names(gdir):
     name = geoname.lookup(35.281, 127.751)
     assert name.startswith("Pukch'on")
-    for ko in ("시천면", "산청군", "산청", "경남"):
+    for ko in ("시천면", "산청군", "경남"):
         assert ko in name, ko
+
+
+def test_short_admin_forms_are_left_out(gdir):
+    # '산청'은 '산청군'의 부분일치로 걸린다. 짧은 꼴을 넣으면 '고양'이 '고양이'를 잡는다.
+    tokens = geoname.lookup(35.281, 127.751).split()
+    assert "산청군" in tokens and "산청" not in tokens
 
 
 def test_old_index_triggers_one_time_remap(gdir):

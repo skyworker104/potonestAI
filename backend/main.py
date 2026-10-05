@@ -654,6 +654,15 @@ def chat(req: ChatRequest):
             search_text = rest or None
             dropped += [w for w in more if w not in dropped]
 
+    # 상황 말뿐인 요청("가족여행 사진")에서 LLM이 내용을 비우면 조건이 하나도
+    # 없어 라이브러리 전체가 나온다 — 그럴 땐 상황 말이라도 내용으로 쓴다.
+    if base_ids is None and not _has_other_condition(
+            place, place_text, date_from, date_to, hour_from, person, media_type,
+            search_text):
+        occasion = llm.strip_occasion(message)[1]
+        if occasion:
+            search_text = occasion[0]
+
     # LLM이 분리한 지명이 등록 지역(places 사전)이면 정밀 GPS 검색으로 승격
     if place_text and not place:
         known = places.detect(place_text)

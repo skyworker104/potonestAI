@@ -49,3 +49,21 @@ def test_explanation_lists_every_condition_and_what_was_dropped():
         "📍 장소: '일본' → GPS 위치가 그 지역 안인 사진",
         "➖ '여행' → 촬영 상황을 말하는 표현이라 검색 조건에서 뺐어요",
     ]
+
+
+def test_occasion_only_request_does_not_return_everything(monkeypatch):
+    """'가족여행 사진' — LLM이 내용을 비워도 전체 라이브러리를 쏟지 않는다."""
+    from backend import main, skills
+    seen = {}
+    monkeypatch.setattr(skills, "match", lambda q: (None, 0.0))
+    monkeypatch.setattr(skills, "add", lambda *a, **k: None)
+    monkeypatch.setattr(main.db, "match_person_name", lambda m: None)
+    monkeypatch.setattr(main.llm, "parse", lambda m, history=None: {
+        "intent": "search", "search_text": None, "place_text": None,
+        "engine": "openrouter"})
+    monkeypatch.setattr(main, "_run_search",
+                        lambda message, **kw: seen.update(kw) or {"results": []})
+    main._last_search.clear()
+    main.chat(main.ChatRequest(message="가족여행 사진", history=[]))
+    assert seen["search_text"] == "가족여행"
+    assert seen["dropped"] == []  # 뺀 게 아니라 내용으로 썼다

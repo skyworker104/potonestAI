@@ -99,6 +99,20 @@ def startup():
     threading.Thread(target=indexer.build_index, daemon=True).start()
     # 로컬 LLM이 떠 있으면 백그라운드로 미리 깨워(콜드 로딩) 첫 응답 지연 방지
     threading.Thread(target=_warmup_llm, daemon=True).start()
+    threading.Thread(target=_warmup_search, daemon=True).start()
+
+
+def _warmup_search():
+    """검색 모델·사전을 미리 올려 둔다 — 재시작 직후 첫 검색이 메모리 빠듯한
+    패드(RAM 3GB, 스왑 사용 중)에서 120초를 넘긴 일이 있다. 이후 검색은 2~6초."""
+    try:
+        from . import landmarks
+        landmarks._index()
+        if indexer.ai_available():
+            from . import embedder
+            embedder.encode_text(["photo"])
+    except Exception:
+        pass
 
 
 def _warmup_llm():
@@ -522,6 +536,15 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
 
     n = len(results)
     refined = base_ids is not None
+    # 내용어 없는 필터 검색은 최근 top_k장까지만 보낸다. 상한에 닿았으면 실제 전체
+    # 수를 세서 밝힌다 — "모두 1000장"이라 하면 거짓이 된다(작년 사진이 더 많을 때).
+    total = None
+    if not search_text and not relaxed and n >= top_k:
+        total = len(search.find(**dict(plan, top_k=10 ** 9)))
+        if total <= n:
+            total = None
+    shown = (f"모두 {total:,}장이에요. 그중 최근 {n:,}장을 보여드려요." if total
+             else f"모두 {n}장이에요.")
     how = _interpretation(place, place_text, search_text)
     # 이미지 근거만 있고 최고점이 기준선 근처 → 결과는 보여주되 솔직히 밝힌다
     scores = [r["score"] for r in results if r.get("score") is not None]
@@ -538,15 +561,15 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         reply = f"요청하신 시기의 사진이 없어서, 가장 가까운 시기의 사진 {n}장을 보여드릴게요."
     elif relaxed:
         how = ", ".join(RELAX_PHRASES.get(l, l) for l in relaxed)
-        reply = f"조건 그대로는 없어서 {how} 다시 찾았어요. 모두 {n}장이에요."
+        reply = f"조건 그대로는 없어서 {how} 다시 찾았어요. {shown}"
     elif refined:
         reply = f"그 중에서 {n}장으로 좁혔어요."
     elif person and not search_text and not place:
-        reply = f"'{person['name']}'님이 나온 사진 {n}장을 찾았어요."
+        reply = f"'{person['name']}'님이 나온 사진을 찾았어요. {shown}"
     elif how:
-        reply = f"{how} 찾았어요. 모두 {n}장이에요."
+        reply = f"{how} 찾았어요. {shown}"
     else:
-        reply = f"모두 {n}장을 찾았어요."
+        reply = f"찾았어요. {shown}"
     if low_conf and n:
         reply += (f" 다만 '{search_text}'와 확실히 일치하는 사진은 없어서,"
                   " 비슷해 보이는 사진이라 정확하지 않을 수 있어요.")
@@ -571,9 +594,12 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         hour_from=hour_from, hour_to=hour_to, person=person,
         media_type=media_type, dropped=dropped, relaxed=relaxed,
         low_conf=low_conf, refined=refined)
+    if total:
+        explanation.append(f"📦 표시: 전체 {total:,}장 중 최근 {n:,}장")
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
             "relaxed": relaxed, "results": results, "explanation": explanation,
+            "total": total or n,
             "interpretation": {
                 "place": place["name"] if place else place_text,
                 "place_kind": (place.get("kind") or "region") if place

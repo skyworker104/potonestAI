@@ -88,3 +88,15 @@ def test_follow_up_fragments_are_never_learned(chat):
     chat("그럼 강아지는?")
     main.feedback_view(main.ViewFeedback(media_id="m1", session_id="A"))
     assert chat.added == []
+
+
+def test_capped_filter_search_states_the_real_total(chat, monkeypatch):
+    """'작년 사진'이 상한(1000)에 걸리면 '모두 1000장'이 아니라 실제 전체를 밝힌다."""
+    from backend import search
+    monkeypatch.setattr(search_retry, "run_with_retry",
+                        lambda plan, finder, **kw: ([{"id": f"m{i}"} for i in range(1000)], []))
+    monkeypatch.setattr(search, "find", lambda **kw: [{"id": i} for i in range(2345)])
+    r = chat("작년 사진")
+    assert "모두 2,345장이에요. 그중 최근 1,000장을 보여드려요." in r["reply"]
+    assert r["total"] == 2345
+    assert "📦 표시: 전체 2,345장 중 최근 1,000장" in r["explanation"]

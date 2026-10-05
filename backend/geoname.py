@@ -31,7 +31,7 @@ _SOURCES = [
 ]
 MAX_KM = 15.0  # 가장 가까운 지명이 이보다 멀면(바다 등) 지명 없음 처리
 # 지명 문자열 구성이 바뀌면 올린다 — 색인을 다시 만들고 사진 지명을 다시 매긴다
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 
 _HANGUL = re.compile(r"[가-힣]")
 _ADMIN_SUFFIX = re.compile(r"(시|군|구|읍|면|동|가)$")
@@ -98,14 +98,42 @@ def _parse_kr(lines):
     return rows
 
 
+# 해외 사진 지명에 붙일 한글 나라 이름 (GeoNames 국가 정보엔 한글명이 없다)
+_COUNTRY_KO = {
+    "JP": "일본", "CN": "중국", "TW": "대만", "HK": "홍콩", "MO": "마카오",
+    "TH": "태국", "VN": "베트남", "PH": "필리핀", "SG": "싱가포르", "MY": "말레이시아",
+    "ID": "인도네시아", "KH": "캄보디아", "LA": "라오스", "MN": "몽골", "IN": "인도",
+    "US": "미국", "CA": "캐나다", "MX": "멕시코", "GU": "괌", "MP": "사이판",
+    "AU": "호주", "NZ": "뉴질랜드", "FR": "프랑스", "IT": "이탈리아", "ES": "스페인",
+    "PT": "포르투갈", "DE": "독일", "GB": "영국", "CH": "스위스", "AT": "오스트리아",
+    "CZ": "체코", "NL": "네덜란드", "BE": "벨기에", "GR": "그리스", "TR": "튀르키예",
+    "HR": "크로아티아", "HU": "헝가리", "RU": "러시아", "AE": "아랍에미리트", "EG": "이집트",
+}
+
+
 def _parse_world(lines):
-    """cities500.txt → 전세계 도시 (해외 여행 사진용)."""
-    rows = []
+    """cities500.txt → 전세계 도시 (해외 여행 사진용).
+
+    동네급 도시는 한글 대안명이 거의 없어 일본 사진 지명이 'Nukui Sakuradai'처럼
+    로마자뿐이었다. 같은 광역 행정구역(도·현·주)의 중심 도시 한글명(PPLA·PPLC —
+    일본은 대개 현 이름과 같다: 나가노, 도쿄)과 한글 나라 이름을 병기한다.
+    """
+    parsed = []
+    region_ko = {}  # (나라, admin1) → 중심 도시 한글명
     for line in lines:
         f = line.rstrip("\n").split("\t")
-        if len(f) < 8:
+        if len(f) < 11:
             continue
-        label = " ".join(dict.fromkeys(_ko_names(f[3]) + [f[1]]))
+        parsed.append(f)
+        kos = _ko_names(f[3], limit=1)
+        if kos and f[7] in ("PPLA", "PPLC") and f[10]:
+            # 같은 행정구역에 수도와 도청 소재지가 겹치면 도청 소재지 우선
+            if f[7] == "PPLA" or (f[8], f[10]) not in region_ko:
+                region_ko[(f[8], f[10])] = kos[0]
+    rows = []
+    for f in parsed:
+        extra = [x for x in (region_ko.get((f[8], f[10])), _COUNTRY_KO.get(f[8])) if x]
+        label = " ".join(dict.fromkeys(_ko_names(f[3]) + [f[1]] + extra))
         try:
             rows.append((label, float(f[4]), float(f[5])))
         except ValueError:

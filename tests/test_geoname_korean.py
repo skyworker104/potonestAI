@@ -64,3 +64,23 @@ def test_old_index_triggers_one_time_remap(gdir):
 def test_fresh_install_does_not_ask_for_remap(gdir):
     assert geoname.available()
     assert geoname.take_rebuilt() is False
+
+
+def test_overseas_town_gets_region_and_country_in_korean(tmp_path, monkeypatch):
+    d = tmp_path / "geo"
+    d.mkdir()
+    with zipfile.ZipFile(d / "KR.zip", "w") as z:
+        z.writestr("KR.txt", "")
+    world = "\n".join([
+        _row("10", "Nagano", "Nagano", "Nagano,나가노", "36.65", "138.18", "P", "PPLA", "JP", "", "20"),
+        _row("11", "Tokyo", "Tokyo", "Tokyo,도쿄", "35.69", "139.69", "P", "PPLC", "JP", "", "40"),
+        _row("12", "Nukui", "Nukui", "", "35.70", "139.50", "P", "PPL", "JP", "", "40"),
+        _row("13", "Matsumoto", "Matsumoto", "", "36.23", "137.97", "P", "PPL", "JP", "", "20"),
+    ]) + "\n"
+    with zipfile.ZipFile(d / "cities500.zip", "w") as z:
+        z.writestr("cities500.txt", world)
+    monkeypatch.setattr(geoname, "DIR", d)
+    monkeypatch.setattr(geoname, "_cache", {"loaded": False, "lat": None, "lon": None,
+                                            "names": None, "rebuilt": False})
+    assert geoname.lookup(35.701, 139.501, k=1) == "Nukui 도쿄 일본"
+    assert geoname.lookup(36.231, 137.971, k=1) == "Matsumoto 나가노 일본"

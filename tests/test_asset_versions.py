@@ -27,6 +27,8 @@ def client(tmp_path, monkeypatch):
         '<script src="없는파일.js?v=3"></script>\n',
         encoding="utf-8")
     monkeypatch.setattr(main, "FRONTEND_DIR", tmp_path)
+    # 서버 시작 시 검색 모델 미리 올리기 — 이 테스트와 무관하고 무겁다
+    monkeypatch.setattr(main, "_warmup_search", lambda: None)
     with TestClient(main.app) as c:
         yield c, tmp_path
 

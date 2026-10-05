@@ -99,3 +99,12 @@ def test_real_index_has_no_stale_manual_versions():
 
     missing = [name for name, ver in local if not ver]
     assert missing == [], f"?v= 가 없어 캐시가 갱신되지 않는 스크립트: {missing}"
+
+
+def test_unrouted_websocket_is_closed_not_500(client):
+    # 정적 파일 마운트까지 떨어지면 AssertionError로 500이 났다
+    from starlette.websockets import WebSocketDisconnect
+    c, _root = client
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect("/no/such/socket") as ws:
+            ws.receive_text()

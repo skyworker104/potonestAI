@@ -671,3 +671,25 @@ def test_compat_status_never_leaks_the_secret(client, token):
     serialized = json.dumps(body)
     assert auth.account()["api_key"] not in serialized
     assert PASSWORD not in serialized
+
+
+# ---------- 실시간 알림 소켓 ----------
+
+def test_socket_io_handshake_keeps_the_app_connected(client, token):
+    client.cookies.set("immich_access_token", token)
+    with client.websocket_connect("/immich/api/socket.io/?EIO=4&transport=websocket") as ws:
+        opened = ws.receive_text()
+        assert opened.startswith("0")
+        assert json.loads(opened[1:])["pingInterval"] > 0
+        ws.send_text("40")
+        connected = ws.receive_text()
+        assert connected.startswith("40") and "sid" in json.loads(connected[2:])
+        ws.send_text("3")  # pong은 받기만 한다
+        ws.send_text("41")
+
+
+def test_socket_io_refuses_without_credentials(client, token):
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/immich/api/socket.io/?EIO=4&transport=websocket") as ws:
+            ws.receive_text()

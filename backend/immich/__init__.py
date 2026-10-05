@@ -22,7 +22,7 @@ scripts/immich_account.py 로 이메일·비밀번호를 정한다. 설정 전�
 """
 from fastapi import APIRouter
 
-from . import auth, library, routes, state
+from . import auth, library, realtime, routes, state
 
 API_PREFIX = "/immich/api"
 
@@ -30,6 +30,7 @@ API_PREFIX = "/immich/api"
 router = APIRouter(prefix=API_PREFIX)
 router.include_router(routes.router)
 router.include_router(library.router)
+router.include_router(realtime.router)   # 실시간 알림 socket.io (/immich/api/socket.io)
 
 # 접두사 없이 붙는 것들 — 앱의 서버 주소 탐색과 PhotoNest 화면용 현황
 discovery = APIRouter()

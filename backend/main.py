@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -864,6 +864,16 @@ def _stamped_index():
 def index():
     # 캐시 방지 — 여기서 스크립트 주소가 정해지므로 이 문서만은 매번 새로 받아야 한다
     return HTMLResponse(_stamped_index(), headers={"Cache-Control": "no-cache"})
+
+
+@app.websocket("/{path:path}")
+async def no_websocket(ws: WebSocket, path: str):
+    """처리하는 곳이 없는 웹소켓은 여기서 닫는다.
+
+    아래 정적 파일 마운트는 HTTP만 받아서, 웹소켓이 거기까지 떨어지면
+    AssertionError로 500이 난다 (scope["type"] == "http").
+    """
+    await ws.close(code=1008)
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

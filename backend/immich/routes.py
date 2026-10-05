@@ -192,9 +192,9 @@ def login(body: LoginBody, request: Request):
 
 @router.post("/auth/logout")
 def logout(request: Request):
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
-        auth.drop_session(header[7:].strip())
+    token = auth.request_token(request)
+    if token:
+        auth.drop_session(token)
     return {"successful": True, "redirectUri": "/"}
 
 

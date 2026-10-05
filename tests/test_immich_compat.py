@@ -165,6 +165,22 @@ def test_protected_endpoints_need_credentials(client, token):
     assert client.get("/immich/api/users/me", headers=_hdr(token)).status_code == 200
 
 
+def test_token_is_accepted_from_cookie_and_user_token_header(client, token):
+    # 안드로이드 앱은 Bearer 없이 쿠키로만 토큰을 보낸다
+    client.cookies.set("immich_access_token", token)
+    assert client.get("/immich/api/users/me").status_code == 200
+    client.cookies.clear()
+    r = client.get("/immich/api/users/me", headers={"x-immich-user-token": token})
+    assert r.status_code == 200
+
+
+def test_logout_with_cookie_invalidates_the_token(client, token):
+    client.cookies.set("immich_access_token", token)
+    assert client.post("/immich/api/auth/logout").status_code == 200
+    client.cookies.clear()
+    assert client.get("/immich/api/users/me", headers=_hdr(token)).status_code == 401
+
+
 def test_api_key_works_for_clients_without_login(client, token):
     key = auth.account()["api_key"]
     r = client.get("/immich/api/albums", headers={"x-api-key": key})

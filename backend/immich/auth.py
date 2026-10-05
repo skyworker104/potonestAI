@@ -130,14 +130,28 @@ def _session_id(token: str):
     return r["token"] if r else None
 
 
+def request_token(request: Request):
+    """요청에 실린 세션 토큰. Immich 서버가 받는 세 자리를 모두 본다.
+
+    현재 안드로이드 앱은 Bearer 헤더가 아니라 immich_access_token 쿠키로만
+    보낸다(네이티브 HTTP 클라이언트의 쿠키 저장소). 헤더만 보면 로그인 직후
+    첫 요청부터 401이 나고 앱이 로그아웃해 첫 화면으로 돌아간다.
+    """
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip() or None
+    return (request.headers.get("x-immich-user-token", "").strip()
+            or request.cookies.get("immich_access_token", "").strip()
+            or None)
+
+
 def identify(request: Request):
     """요청의 자격증명을 확인해 세션 식별자를 돌려준다. 실패하면 None.
 
     세션 식별자는 동기화 워터마크(ack)의 키로도 쓴다 — 기기마다 따로 진행된다.
     """
-    header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
-        token = header[7:].strip()
+    token = request_token(request)
+    if token:
         sid = _session_id(token)
         if sid:
             return sid

@@ -100,3 +100,24 @@ def test_capped_filter_search_states_the_real_total(chat, monkeypatch):
     assert "모두 2,345장이에요. 그중 최근 1,000장을 보여드려요." in r["reply"]
     assert r["total"] == 2345
     assert "📦 표시: 전체 2,345장 중 최근 1,000장" in r["explanation"]
+
+
+def test_overseas_town_named_as_content_is_searched_as_a_place(chat, monkeypatch):
+    """'나가노 사진': LLM이 내용으로 분류해도, 사진 지명에 'Nagano'가 있으면 장소다."""
+    from backend import search
+    monkeypatch.setattr(search, "place_tokens", lambda: {"nagano", "일본", "도쿄"})
+    monkeypatch.setattr(search, "_to_english", lambda t: {"나가노": "Nagano"}.get(t, t))
+    monkeypatch.setattr(llm, "parse", lambda m, history=None: dict(
+        intent="search", search_text="나가노", place_text=None, engine="openrouter"))
+    chat("나가노 사진")
+    plan = chat.plans[-1]
+    assert plan["place_text"] == "나가노" and plan["search_text"] is None
+
+
+def test_common_content_word_is_not_mistaken_for_a_place(chat, monkeypatch):
+    from backend import search
+    monkeypatch.setattr(search, "place_tokens", lambda: {"sea", "nagano"})
+    monkeypatch.setattr(llm, "parse", lambda m, history=None: dict(
+        intent="search", search_text="바다", place_text=None, engine="openrouter"))
+    chat("바다 사진")
+    assert chat.plans[-1]["search_text"] == "바다"   # 내용어 사전 단어는 그대로

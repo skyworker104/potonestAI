@@ -730,6 +730,13 @@ def chat(req: ChatRequest):
             search_text = rest or None
             dropped += [w for w in more if w not in dropped]
 
+    # LLM이 사진 내용으로 분류한 한 낱말이 실제 사진 지명이면 장소로 본다
+    # (실사례: "나가노 사진" → 내용 '나가노' → 이미지 검색 1장. 지명은 'Nagano')
+    if search_text and not place and not place_text:
+        term = search_text.strip()
+        if " " not in term and term not in _CONTENT_WORDS and search.place_alias(term):
+            place_text, search_text = term, None
+
     # 스킬 후보는 장소 해석 전의 지명 문자열로 저장한다 (재사용 때 다시 푼다)
     skill_place_text = place_text
 

@@ -53,6 +53,39 @@ def _to_english(text):
     return _en_cache[text]
 
 
+def place_tokens():
+    """사진 지명(역지오코딩)에 나오는 낱말 집합 — 소문자, NFC."""
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT DISTINCT place_name FROM media WHERE trashed_at IS NULL "
+            "AND place_name IS NOT NULL AND place_name <> ''").fetchall()
+    toks = set()
+    for r in rows:
+        low = unicodedata.normalize("NFC", r["place_name"]).lower()
+        toks.update(t for t in _TOKEN_SPLIT.split(low) if t)
+    return toks
+
+
+def place_alias(term):
+    """사진 지명에 실제로 나오는 표기 — 그대로 있으면 term, 영어 표기로만 있으면
+    그 영어 낱말(나가노 → Nagano), 없으면 None.
+
+    해외 동네급 지명은 한글 이름이 없어 사진 지명이 로마자뿐이다. 번역은
+    _to_english 캐시를 쓰므로 CLIP(영어) 백엔드에선 추가 호출이 없다.
+    """
+    term = (term or "").strip()
+    if not term:
+        return None
+    toks = place_tokens()
+    if term.lower() in toks:
+        return term
+    if _HANGUL.search(term):
+        for w in re.split(r"\s+", _to_english(term) or ""):
+            if len(w) >= 3 and w.lower() in toks:
+                return w
+    return None
+
+
 def get_comment_model():
     """코멘트 문장 의미 검색용 인코더.
 
@@ -369,6 +402,10 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     if place_text:
         sub = {it["id"]: it for it in candidates}
         ph = _named_matches(place_text, set(sub), sub)
+        if not ph and _HANGUL.search(place_text):
+            alias = place_alias(place_text)   # 한글 이름이 없는 해외 지명
+            if alias and alias != place_text:
+                ph = _named_matches(alias, set(sub), sub)
         candidates = [it for it in candidates if it["id"] in ph]
         if not candidates:
             return []

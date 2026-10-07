@@ -502,7 +502,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
                 hour_from=None, hour_to=None, place_text=None, base_ids=None,
                 skill_id=None, date_label=None, dropped=(), state=None,
-                notes=(), pending_skill=None):
+                notes=(), pending_skill=None, album=None):
     from . import search_retry
     if state is None:
         state = _session(None)
@@ -535,7 +535,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     )
 
     n = len(results)
-    refined = base_ids is not None
+    refined = base_ids is not None and album is None  # 앨범 안 검색은 '좁히기'가 아니다
     # 내용어 없는 필터 검색은 최근 top_k장까지만 보낸다. 상한에 닿았으면 실제 전체
     # 수를 세서 밝힌다 — "모두 1000장"이라 하면 거짓이 된다(작년 사진이 더 많을 때).
     total = None
@@ -550,7 +550,19 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     scores = [r["score"] for r in results if r.get("score") is not None]
     low_conf = bool(search_text and quality_bar is not None and scores
                     and max(scores) < quality_bar)
-    if n == 0:
+    if album is not None:
+        aname = f"'{album['name']}' 앨범"
+        if n == 0:
+            reply = (f"{aname}에는 그 조건에 맞는 사진이 없어요." if how
+                     else f"{aname}에 사진이 없어요.")
+        elif relaxed:
+            phrase = ", ".join(RELAX_PHRASES.get(l, l) for l in relaxed)
+            reply = f"{aname}에서 조건 그대로는 없어서 {phrase} 다시 찾았어요. {shown}"
+        elif how:
+            reply = f"{aname}에서 {how} 찾았어요. {shown}"
+        else:
+            reply = f"{aname}의 사진이에요. {shown}"
+    elif n == 0:
         if refined:
             reply = "직전 결과 안에는 그 조건에 맞는 사진이 없어요."
         elif how:
@@ -583,12 +595,14 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         skill_id=skill_id,      # 피드백을 귀속시킬 스킬
         view_credited=False,    # 열람 신호는 검색당 1회만 반영
         refined=refined,        # 정제 검색이면 긍정 피드백 때 스킬로 저장하지 않음
+        album=album,            # 이어 묻기("그럼 작년 거는?")가 같은 앨범 안에서 찾도록
         date_label=date_label,  # 이어 묻기에서 기간을 물려줄 때 설명용
         # LLM 해석은 바로 스킬로 저장하지 않는다 — 사용자가 맞다고 하거나 결과를
         # 열어 봤을 때만(틀린 해석이 학습되던 문제: '지리산'을 사진 내용으로 저장)
         pending_skill=pending_skill if results and not low_conf else None,
     )
-    explanation = list(notes) + _explain(
+    explanation = list(notes) + (
+        [f"📁 앨범: '{album['name']}' 안의 사진만"] if album is not None else []) + _explain(
         place=place, place_text=place_text, search_text=search_text,
         date_from=date_from, date_to=date_to, date_label=date_label,
         hour_from=hour_from, hour_to=hour_to, person=person,
@@ -600,6 +614,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
             "skill": skill_used, "place": place["name"] if place else None,
             "relaxed": relaxed, "results": results, "explanation": explanation,
             "total": total or n,
+            "album": album["name"] if album is not None else None,
             "interpretation": {
                 "place": place["name"] if place else place_text,
                 "place_kind": (place.get("kind") or "region") if place
@@ -652,6 +667,14 @@ def chat(req: ChatRequest):
         if follow is not None:
             message = follow
 
+    # 0.7) 앨범 이름 — "쿤 앨범", "쿤 앨범에서 작년 바다 사진". 그 앨범 안에서 찾는다.
+    album = None
+    if base_ids is None:
+        hit = _detect_album(message)
+        if hit:
+            album, message = hit
+            base_ids = _album_ids(album)
+
     meta = llm.quick_meta(message)
     if meta["greeting"]:
         return {"reply": "안녕하세요! 찾고 싶은 사진을 말씀해 주세요.",
@@ -686,7 +709,7 @@ def chat(req: ChatRequest):
 
     learn_from = None  # 스킬 후보로 삼을 LLM 해석의 원문 (확인 뒤에만 저장)
     # 장소만 남았거나 이어 묻기에서 바꾼 조건이 날짜 등뿐이면 LLM이 필요 없다
-    if has_content or (not place and follow is None):
+    if has_content or (not place and not album and follow is None):
         target = core
         skill, sim = skills.match(target)
         if skill:
@@ -763,6 +786,10 @@ def chat(req: ChatRequest):
             date_from, date_to = ls.get("date_from"), ls.get("date_to")
             date_label = ls.get("date_label")
             inherited.append("기간")
+        if album is None and base_ids is None and ls.get("album"):
+            album = ls["album"]
+            base_ids = _album_ids(album)
+            inherited.append("앨범")
         if hour_from is None and ls.get("hour_from") is not None:
             hour_from, hour_to = ls["hour_from"], ls["hour_to"]
             inherited.append("시간대")
@@ -793,14 +820,55 @@ def chat(req: ChatRequest):
                              media_type=media_type, place_text=skill_place_text)
 
     return _run_search(
-        message, search_text=search_text, bbox=bbox, place=place,
+        # "쿤 앨범"처럼 앨범 말을 떼면 빈 문장이 남는다 — 세션의 직전 검색어가
+        # 비면 이어 묻기가 '직전 검색 없음'으로 보므로 원래 말을 쓴다
+        message or req.message, search_text=search_text, bbox=bbox, place=place,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, engine=engine, skill_used=skill_used,
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
         base_ids=base_ids, skill_id=skill_id,
         date_label=date_label, dropped=dropped, state=ls, notes=notes,
-        pending_skill=pending_skill,
+        pending_skill=pending_skill, album=album,
     )
+
+
+_ALBUM_JOSA = r"(?:에서|안에서|속|의|에|은|는|이|가|을|를|도)?"
+
+
+def _detect_album(message):
+    """말에서 사용자 앨범을 찾는다 → (앨범, 앨범 말을 뺀 나머지) 또는 None.
+
+    - '앨범'과 함께 말하면("쿤 앨범", "쿤앨범에서", "앨범 쿤") 이름 길이와 무관하게.
+      이름 검색(search._name_words)은 한 글자 낱말을 버리므로 '쿤' 같은 이름은
+      이 경로가 아니면 이미지 검색어로 새어 엉뚱한 사진이 나왔다.
+    - '앨범' 없이 핵심어가 앨범 이름과 똑같으면 — 두 글자 이상만(오인 방지).
+    이름이 겹치면 더 긴 이름을 고른다.
+    """
+    from . import skills
+    albums = [a for a in db.list_albums() if (a.get("name") or "").strip()]
+    best = None
+    for a in albums:
+        n = re.escape(a["name"].strip())
+        pat = re.compile(
+            rf"(?<![가-힣A-Za-z0-9]){n}\s*앨범{_ALBUM_JOSA}"
+            rf"|앨범\s*{n}{_ALBUM_JOSA}(?![가-힣A-Za-z0-9])", re.I)
+        m = pat.search(message)
+        if m and (best is None or len(a["name"]) > len(best[0]["name"])):
+            best = (a, m)
+    if best:
+        a, m = best
+        rest = message[:m.start()] + " " + message[m.end():]
+        return a, re.sub(r"\s+", " ", rest).strip()
+    core = re.sub(r"\s+", "", skills._strip_terms(message)).lower()
+    for a in albums:
+        name = re.sub(r"\s+", "", a["name"]).lower()
+        if len(name) >= 2 and name == core:
+            return a, ""
+    return None
+
+
+def _album_ids(album):
+    return [it["id"] for it in db.list_photos(album_id=album["id"], limit=1000000)]
 
 
 def _has_other_condition(place, place_text, date_from, date_to, hour_from,

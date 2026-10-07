@@ -121,3 +121,63 @@ def test_common_content_word_is_not_mistaken_for_a_place(chat, monkeypatch):
         intent="search", search_text="바다", place_text=None, engine="openrouter"))
     chat("바다 사진")
     assert chat.plans[-1]["search_text"] == "바다"   # 내용어 사전 단어는 그대로
+
+
+# ---------- 앨범 이름으로 찾기 ----------
+
+@pytest.fixture
+def albums(monkeypatch):
+    data = {1: ("쿤", ["k1", "k2"]), 2: ("가족여행", ["f1"])}
+    monkeypatch.setattr(db, "list_albums", lambda: [
+        {"id": i, "name": n} for i, (n, _) in data.items()])
+    real = db.list_photos
+
+    def list_photos(album_id=None, **kw):
+        if album_id is None:
+            return real(**kw)
+        return [{"id": m} for m in data[album_id][1]]
+    monkeypatch.setattr(db, "list_photos", list_photos)
+
+
+def test_one_letter_album_is_found_by_name(chat, albums):
+    """'쿤 앨범' — 한 글자 이름이라 이름 검색에서 빠지고 이미지 검색으로 새던 문제."""
+    r = chat("쿤 앨범 보여줘")
+    plan = chat.plans[-1]
+    assert plan["only_ids"] == ["k1", "k2"] and plan["search_text"] is None
+    assert r["reply"].startswith("'쿤' 앨범의 사진이에요.")
+    assert r["explanation"][0] == "📁 앨범: '쿤' 안의 사진만"
+
+
+def test_conditions_are_searched_inside_the_album(chat, albums):
+    r = chat("쿤 앨범에서 강아지 사진")
+    plan = chat.plans[-1]
+    assert plan["only_ids"] == ["k1", "k2"] and plan["search_text"] == "강아지"
+    assert r["reply"].startswith("'쿤' 앨범에서 '강아지'를 사진 내용으로 보고 찾았어요.")
+
+
+def test_album_word_order_and_particles(chat, albums):
+    chat("앨범 쿤에서 강아지 사진")
+    assert chat.plans[-1]["only_ids"] == ["k1", "k2"]
+
+
+def test_album_name_must_be_a_whole_word(chat, albums):
+    chat("타쿤 앨범")                      # '쿤'이 다른 낱말의 일부 — 앨범 아님
+    assert chat.plans[-1]["only_ids"] is None
+
+
+def test_one_letter_name_without_album_word_is_not_an_album(chat, albums):
+    chat("쿤 사진")
+    assert chat.plans[-1]["only_ids"] is None
+
+
+def test_longer_name_matches_without_the_word_album(chat, albums):
+    chat("가족여행 보여줘")
+    assert chat.plans[-1]["only_ids"] == ["f1"]
+
+
+def test_follow_up_stays_in_the_album(chat, albums):
+    chat("쿤 앨범")
+    r = chat("그럼 작년 거는?")
+    plan = chat.plans[-1]
+    assert plan["only_ids"] == ["k1", "k2"] and plan["date_from"]
+    assert "앨범" in r["explanation"][0]

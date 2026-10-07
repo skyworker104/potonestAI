@@ -459,11 +459,11 @@ body.chat-hidden #chat-panel { display: none; }
 #slideshow { position: fixed; inset: 0; background: #000; z-index: 2000; }
 #slideshow[hidden] { display: none; }
 /* 두 이미지를 겹쳐 두고 opacity 전환으로 크로스페이드 — 끊김 없는 전환 */
-#ss-img, #ss-img-b {
+#ss-img, #ss-img-b, #ss-video {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; opacity: 0; transition: opacity .9s ease;
 }
-#ss-img.show, #ss-img-b.show { opacity: 1; }
+#ss-img.show, #ss-img-b.show, #ss-video.show { opacity: 1; }
 /* 켄번즈는 페이드와 분리(확대만) — opacity는 transition이 담당 */
 .kenburns { animation: kb 5s ease-in-out forwards; }
 @keyframes kb {

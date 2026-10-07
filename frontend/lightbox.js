@@ -286,18 +286,50 @@ document.addEventListener("visibilitychange", () => {
 });
 
 let ssActive = 0;    // 현재 앞에 보이는 이미지 (0: #ss-img, 1: #ss-img-b)
-let ssLoadToken = 0; // 빠른 이전/다음 연타 시 늦게 로드된 이미지가 덮어쓰는 것 방지
+let ssLoadToken = 0; // 빠른 이전/다음 연타 시 늦게 로드된 항목이 덮어쓰는 것 방지
+const SS_PHOTO_MS = 4000;       // 사진 한 장 보여주는 시간
+const SS_VIDEO_MAX_MS = 60000;  // 동영상은 끝까지 재생하되 1분에서 넘긴다 — 긴 영상에 묶이지 않게
+
+// 사진과 동영상 모두 — 예전엔 사진만 걸러 동영상이 빠졌고, 그 탓에 상세 보기에서
+// 시작하면 순번(lbIndex)이 어긋나 다른 사진부터 나왔다.
+function ssItems() {
+  return state.currentItems.filter((it) => it.type === "image" || it.type === "video");
+}
+
+function ssSchedule(ms) {
+  clearTimeout(ssTimer);
+  ssTimer = ssPaused ? null : setTimeout(() => ssShow(ssIndex + 1), ms);
+}
+
+function ssStopVideo() {
+  const v = $("#ss-video");
+  v.onloadeddata = v.onended = v.onerror = null;
+  v.pause();
+  v.removeAttribute("src");
+  v.load();
+  v.classList.remove("show");
+}
+
+// 자동재생 정책으로 소리 있는 재생이 막히면 무음으로라도 재생한다
+function ssPlay(v) {
+  v.muted = false;
+  v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+}
 
 function ssShow(i) {
-  const items = state.currentItems.filter((it) => it.type === "image");
+  const items = ssItems();
   if (!items.length) return;
   ssIndex = ((i % items.length) + items.length) % items.length;
-  const url = `/media/${encodeURIComponent(items[ssIndex].path)}`;
+  const it = items[ssIndex];
+  const url = `/media/${encodeURIComponent(it.path)}`;
   const token = ++ssLoadToken;
+  clearTimeout(ssTimer);
+  if (it.type === "video") return ssShowVideo(url, token);
   // 미리 로드한 뒤에 페이드 시작 — 로딩 중 검은 화면/깜빡임 없이 부드럽게 전환
   const pre = new Image();
   pre.onload = () => {
     if (token !== ssLoadToken) return; // 더 최신 전환 요청이 있으면 무시
+    ssStopVideo();
     const imgs = [$("#ss-img"), $("#ss-img-b")];
     const next = imgs[1 - ssActive];
     const cur = imgs[ssActive];
@@ -307,26 +339,41 @@ function ssShow(i) {
     next.classList.add("kenburns", "show");
     cur.classList.remove("show");
     ssActive = 1 - ssActive;
+    ssSchedule(SS_PHOTO_MS);
   };
+  pre.onerror = () => { if (token === ssLoadToken) ssSchedule(500); }; // 깨진 파일은 건너뜀
   pre.src = url;
 }
 
+function ssShowVideo(url, token) {
+  const v = $("#ss-video");
+  ssStopVideo();
+  v.onloadeddata = () => {
+    if (token !== ssLoadToken) return;
+    [$("#ss-img"), $("#ss-img-b")].forEach((im) => im.classList.remove("show"));
+    v.classList.add("show");
+    if (!ssPaused) ssPlay(v);
+    ssSchedule(SS_VIDEO_MAX_MS);
+  };
+  v.onended = () => { if (token === ssLoadToken && !ssPaused) ssShow(ssIndex + 1); };
+  v.onerror = () => { if (token === ssLoadToken) ssSchedule(500); }; // 재생 못 하는 형식은 건너뜀
+  v.src = url;
+}
+
 function startSlideshow(fromIndex = 0) {
-  const items = state.currentItems.filter((it) => it.type === "image");
-  if (!items.length) { speak("슬라이드쇼로 보여줄 사진이 없어요."); return; }
+  if (!ssItems().length) { speak("슬라이드쇼로 보여줄 사진이나 동영상이 없어요."); return; }
   closeLightbox();
   $("#slideshow").hidden = false;
   ssPaused = false;
   $("#ss-pause").textContent = "⏸";
-  // 이전 세션의 사진이 잠깐 비치지 않도록 두 레이어 초기화
+  // 이전 세션의 사진이 잠깐 비치지 않도록 레이어 초기화
   [$("#ss-img"), $("#ss-img-b")].forEach((im) => {
     im.classList.remove("show", "kenburns");
     im.removeAttribute("src");
   });
+  ssStopVideo();
   ssActive = 0;
-  ssShow(Math.max(fromIndex, 0));
-  clearInterval(ssTimer);
-  ssTimer = setInterval(() => { if (!ssPaused) ssShow(ssIndex + 1); }, 4000);
+  ssShow(Math.max(fromIndex, 0)); // 다음 항목 예약은 ssShow가 항목 종류에 맞춰 한다
   acquireWakeLock(); // 슬라이드쇼 동안 절전(화면 꺼짐) 방지
   if (document.documentElement.requestFullscreen) {
     document.documentElement.requestFullscreen().catch(() => {});
@@ -335,9 +382,10 @@ function startSlideshow(fromIndex = 0) {
 
 function stopSlideshow() {
   $("#slideshow").hidden = true;
-  clearInterval(ssTimer);
+  clearTimeout(ssTimer);
   ssTimer = null;
   ssLoadToken++; // 로딩 중이던 전환 무효화
+  ssStopVideo();
   releaseWakeLock();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
@@ -348,4 +396,15 @@ $("#ss-prev").onclick = () => ssShow(ssIndex - 1);
 $("#ss-pause").onclick = () => {
   ssPaused = !ssPaused;
   $("#ss-pause").textContent = ssPaused ? "▶" : "⏸";
+  const v = $("#ss-video");
+  const onVideo = v.classList.contains("show");
+  if (ssPaused) {
+    clearTimeout(ssTimer);
+    if (onVideo) v.pause();
+  } else if (onVideo) {
+    ssPlay(v);                 // 이어서 재생 — 끝나면 onended가 넘긴다
+    ssSchedule(SS_VIDEO_MAX_MS);
+  } else {
+    ssSchedule(SS_PHOTO_MS);
+  }
 };

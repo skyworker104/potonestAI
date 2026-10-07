@@ -175,10 +175,39 @@ function clearSelection() {
   updateSelectionBar();
 }
 
+/* 이 화면에서 선택할 수 있는 전체 개수 — 타임라인은 달별 지연 로딩이라 합계로 센다 */
+function selectableCount() {
+  if (state.view === "photos") return state.months.reduce((n, m) => n + m.count, 0);
+  return state.currentItems.length;
+}
+
+/* 이 화면의 사진 전체 선택 — 이미 전부 선택돼 있으면 전체 해제 */
+async function toggleSelectAll() {
+  let items = state.currentItems;
+  if (state.view === "photos") {
+    // 아직 안 불러온 달까지 불러와야 '전체'가 된다
+    for (const m of state.months) {
+      if (!state.monthItems[m.ym]) {
+        state.monthItems[m.ym] = (await api.get(`/api/photos?month=${m.ym}`)).items;
+      }
+    }
+    items = state.months.flatMap((m) => state.monthItems[m.ym]);
+  }
+  const allSelected = items.length > 0 && items.every((it) => state.selection.has(it.id));
+  if (allSelected) return clearSelection();
+  items.forEach((it) => state.selection.add(it.id));
+  $$("#content .tile").forEach((t) => t.classList.add("selected"));
+  if (state.view === "photos") state.months.forEach((m) => updateMonthCheck(m.ym));
+  updateSelectionBar();
+}
+
 function updateSelectionBar() {
   const n = state.selection.size;
   $("#selection-bar").hidden = n === 0;
   $("#sel-count").textContent = `${n}개 선택됨`;
+  const total = selectableCount();
+  $("#sel-all").hidden = total === 0;
+  $("#sel-all").textContent = n >= total ? "전체 해제" : `전체 선택 (${total})`;
   const inTrash = state.view === "trash";
   const inAlbum = state.view === "albumDetail";
   $("#sel-album").hidden = inTrash;
@@ -218,6 +247,7 @@ $("#sel-trash").onclick = async () => {
 };
 
 $("#sel-album").onclick = () => openAlbumModal([...state.selection]);
+$("#sel-all").onclick = () => toggleSelectAll().catch(() => {});
 
 $("#sel-album-remove").onclick = async () => {
   if (!state.currentAlbum) return;

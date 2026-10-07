@@ -191,6 +191,11 @@ body.chat-hidden #chat-panel { display: none; }
 #selection-bar[hidden] { display: none; }
 #sel-cancel { background: none; border: none; color: var(--text); font-size: 16px; cursor: pointer; }
 #sel-count { font-size: 13.5px; }
+.sel-all {
+  background: none; color: var(--accent); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+}
+.sel-all:hover { background: rgba(79,140,255,.15); }
 .sel-actions { margin-left: auto; display: flex; gap: 8px; }
 .sel-actions button {
   background: var(--panel2); color: var(--text); border: 1px solid #2c3245;

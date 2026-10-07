@@ -305,19 +305,43 @@ let permissionDenied = false;
 let lastFinalText = "";
 let lastFinalAt = 0;
 
+// 듣기 방식 — "continuous": 끄기 전까지 계속 듣기 / "once": 한 번 말하면 실행하고 멈춤
+let listenMode = "continuous";
+try { listenMode = localStorage.getItem("pn-listen-mode") === "once" ? "once" : "continuous"; } catch (_) {}
+let introShown = false;
+
+/* 마이크 아이콘과 상태 문구를 현재 상태에서 함께 계산한다.
+   예전엔 문구를 onstart에서만 "듣고 있어요"로 쓰고 onend에선 아이콘만 되돌려,
+   태블릿처럼 세션이 자주 끊기는 환경에서 파란 아이콘 + "듣고 있어요"가 남았다. */
+function renderVoiceUI(message) {
+  const orb = $("#voice-orb");
+  orb.classList.toggle("listening", recognizing);
+  orb.classList.toggle("speaking", speaking);
+  orb.classList.toggle("armed", voiceMode && !recognizing && !speaking);
+  let text = message;
+  if (text === undefined) {
+    if (permissionDenied) text = "마이크 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요.";
+    else if (speaking) text = "답변 중…";
+    else if (recognizing) text = "듣고 있어요… 말씀하세요";
+    else if (voiceMode) text = "다시 듣기를 준비하고 있어요…";
+    else text = listenMode === "once"
+      ? "마이크를 누르고 한 번 말씀하세요"
+      : "마이크를 누르면 계속 들어요";
+  }
+  $("#voice-state").textContent = text;
+  $$("#listen-mode button").forEach((b) =>
+    b.setAttribute("aria-checked", String(b.dataset.mode === listenMode)));
+}
+
 function initRecognition() {
   if (!SR) return null;
   const r = new SR();
   r.lang = "ko-KR";
   r.interimResults = true;
-  // 모바일/태블릿 크롬은 continuous=true에서 같은 발화를 3~4번 재인식하는 버그가 있다.
-  // 모바일은 세션당 1발화(continuous=false)로 처리하고, 연속 대화는 onend→재시작이 담당.
-  r.continuous = !IS_MOBILE;
 
   r.onstart = () => {
     recognizing = true;
-    $("#voice-orb").classList.add("listening");
-    $("#voice-state").textContent = "듣고 있어요… 말씀하세요";
+    renderVoiceUI();
   };
   r.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -330,40 +354,66 @@ function initRecognition() {
         if (text === lastFinalText && now - lastFinalAt < 2500) continue;
         lastFinalText = text;
         lastFinalAt = now;
+        if (listenMode === "once") endVoiceSession();  // 한 번 듣기: 인식했으면 멈춘다
         handleUtterance(text);
-      } else {
-        $("#voice-state").textContent = res[0].transcript;
+      } else if (recognizing) {
+        renderVoiceUI(res[0].transcript);
       }
     }
   };
   r.onerror = (e) => {
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      voiceMode = false;
       permissionDenied = true;
-      stopKeepAlive();
-      $("#voice-orb").classList.remove("listening");
-      $("#voice-state").textContent = "마이크 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요.";
+      endVoiceSession();
     }
     // no-speech · network · aborted 등은 무시 — onend가 이어서 재시작한다.
   };
   r.onend = () => {
     recognizing = false;
-    $("#voice-orb").classList.remove("listening");
+    if (voiceMode && listenMode === "once") {
+      // 한 번 듣기인데 인식 결과 없이 끝남(침묵) — 멈추고 안내
+      endVoiceSession("말씀이 들리지 않아 멈췄어요. 마이크를 다시 눌러 주세요.");
+      return;
+    }
     // 모바일/태블릿 크롬은 continuous를 무시해 매 발화·침묵 후 세션이 끊긴다.
-    // voiceMode가 켜져 있으면 즉시 다시 듣기 시작(연속 대화 유지).
+    // 계속 듣기면 즉시 다시 듣기 시작(연속 대화 유지).
     if (voiceMode && !speaking) setTimeout(startListening, 250);
-    else if (!voiceMode && !permissionDenied) $("#voice-state").textContent = "마이크를 눌러 음성 대화를 시작하세요";
+    renderVoiceUI();
   };
   return r;
 }
 
 function startListening() {
   if (!voiceMode || recognizing || speaking) return;
+  // 모바일/태블릿 크롬은 continuous=true에서 같은 발화를 3~4번 재인식하는 버그가 있다.
+  // 모바일과 한 번 듣기는 세션당 1발화, 계속 듣기는 onend→재시작이 대화를 잇는다.
+  recog.continuous = listenMode === "continuous" && !IS_MOBILE;
   try {
     recog.start();
   } catch (_) {
     setTimeout(startListening, 400); // 이전 세션 정리 중이면 재시도
   }
+}
+
+function beginVoiceSession() {
+  permissionDenied = false;
+  if (!recog) recog = initRecognition();
+  voiceMode = true;
+  if (!introShown) {
+    introShown = true;
+    addMsg("음성 대화를 시작해요. 예: \"바닷가 사진 찾아줘\", \"슬라이드쇼 시작\", \"가족 앨범 만들어줘\", \"즐겨찾기에 추가해줘\"", "ai");
+  }
+  startListening();
+  if (listenMode === "continuous") startKeepAlive(); // 태블릿에서 마이크가 계속 켜져 있도록 유지
+  renderVoiceUI();
+}
+
+// 듣기를 끝낸다 — 진행 중인 답변 음성은 그대로 둔다(한 번 듣기에서 답을 들어야 하므로)
+function endVoiceSession(message) {
+  voiceMode = false;
+  stopKeepAlive();
+  if (recognizing) { try { recog.stop(); } catch (_) {} }
+  renderVoiceUI(message);
 }
 
 /* ---------------- 듣기 유지 watchdog ----------------
@@ -396,17 +446,15 @@ function speak(text) {
   const ko = speechSynthesis.getVoices().find((v) => v.lang.startsWith("ko"));
   if (ko) u.voice = ko;
   u.rate = 1.05;
-  u.onstart = () => {
-    $("#voice-orb").classList.add("speaking");
-    $("#voice-state").textContent = "답변 중…";
-  };
+  u.onstart = () => renderVoiceUI();
   const done = () => {
     speaking = false;
-    $("#voice-orb").classList.remove("speaking");
-    if (voiceMode) setTimeout(startListening, 300);
+    if (voiceMode) setTimeout(startListening, 300); // 계속 듣기만 (한 번 듣기는 이미 끝남)
+    renderVoiceUI();
   };
   u.onend = done;
   u.onerror = done;
+  renderVoiceUI();
   speechSynthesis.speak(u);
 }
 if ("speechSynthesis" in window) speechSynthesis.getVoices();
@@ -414,25 +462,29 @@ if ("speechSynthesis" in window) speechSynthesis.getVoices();
 /* ---------------- UI 이벤트 ---------------- */
 $("#voice-orb").onclick = () => {
   if (!SR) {
-    $("#voice-state").textContent = "이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 사용해 주세요.";
+    renderVoiceUI("이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 사용해 주세요.");
     return;
   }
-  voiceMode = !voiceMode;
   if (voiceMode) {
-    permissionDenied = false;
-    if (!recog) recog = initRecognition();
-    addMsg("음성 대화 모드 시작. 예: \"바닷가 사진 찾아줘\", \"슬라이드쇼 시작\", \"가족 앨범 만들어줘\", \"즐겨찾기에 추가해줘\"", "ai");
-    startListening();
-    startKeepAlive(); // 태블릿에서 마이크가 계속 켜져 있도록 유지
-  } else {
-    stopKeepAlive();
+    // 듣는 중에 누르면 멈춤 — 답변 음성도 끊는다
     speechSynthesis.cancel();
-    if (recognizing) try { recog.stop(); } catch (_) {}
     speaking = false;
-    $("#voice-orb").classList.remove("listening");
-    $("#voice-state").textContent = "마이크를 눌러 음성 대화를 시작하세요";
+    endVoiceSession();
+  } else {
+    beginVoiceSession();
   }
 };
+
+$$("#listen-mode button").forEach((b) => {
+  b.onclick = () => {
+    if (b.dataset.mode === listenMode) return;
+    listenMode = b.dataset.mode;
+    try { localStorage.setItem("pn-listen-mode", listenMode); } catch (_) {}
+    if (voiceMode) endVoiceSession(); // 방식을 바꾸면 새로 눌러 시작
+    else renderVoiceUI();
+  };
+});
+renderVoiceUI();
 
 $("#chat-form").onsubmit = (e) => {
   e.preventDefault();

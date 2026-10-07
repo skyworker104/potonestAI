@@ -48,6 +48,10 @@
         </svg>
       </button>
       <div id="voice-state">마이크를 눌러 음성 대화를 시작하세요</div>
+      <div id="listen-mode" role="radiogroup" aria-label="듣기 방식">
+        <button type="button" data-mode="continuous" role="radio" title="끄기 전까지 계속 듣고, 답변 뒤에도 다시 들어요">🔁 계속 듣기</button>
+        <button type="button" data-mode="once" role="radio" title="마이크를 누르고 한 번 말하면 실행하고 멈춰요">☝️ 한 번 듣기</button>
+      </div>
     </div>
     <form id="chat-form">
       <input id="chat-input" type="text" placeholder="예: 작년 여름 바닷가 사진 찾아줘" autocomplete="off">

@@ -247,6 +247,27 @@ $("#sel-trash").onclick = async () => {
 };
 
 $("#sel-album").onclick = () => openAlbumModal([...state.selection]);
+
+/* 선택한 사진 원본 내려받기 — 한 장은 원본, 여러 장은 ZIP(서버가 만들며 바로 전송).
+   폼 POST로 보내야 선택이 수천 장이어도 URL 길이 제한에 안 걸리고, 브라우저가
+   파일 다운로드로 직접 받아 페이지 메모리를 쓰지 않는다. */
+$("#sel-download").onclick = () => {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/api/download";
+  form.style.display = "none";
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "ids";
+  input.value = ids.join(",");
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  speak(ids.length === 1 ? "사진을 내려받을게요." : `${ids.length}장을 압축 파일로 내려받을게요.`);
+};
 $("#sel-all").onclick = () => toggleSelectAll().catch(() => {});
 
 $("#sel-album-remove").onclick = async () => {

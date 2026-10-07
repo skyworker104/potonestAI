@@ -6,8 +6,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Form, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1116,6 +1116,93 @@ def media(rel_path: str):
         except Exception:
             return FileResponse(p)  # 변환 실패 시 원본
     return FileResponse(p)
+
+
+def _media_file(m):
+    """미디어 행 → 실제 원본 파일 경로 (휴지통이면 휴지통 사본). 없으면 None."""
+    if m.get("trashed_at") and m.get("trash_path"):
+        root = db.DATA_DIR.resolve()
+        p = (db.DATA_DIR / m["trash_path"]).resolve()
+    else:
+        root = indexer.PHOTOS_DIR.resolve()
+        p = (indexer.PHOTOS_DIR / m["path"]).resolve()
+    return p if str(p).startswith(str(root)) and p.is_file() else None
+
+
+class _ChunkSink:
+    """zipfile이 쓰는 바이트를 모아 두는 비탐색(non-seekable) 출력 —
+    StreamingResponse 제너레이터가 조금씩 꺼내 보낸다."""
+
+    def __init__(self):
+        self.buf = bytearray()
+        self.pos = 0
+
+    def write(self, b):
+        self.buf += b
+        self.pos += len(b)
+        return len(b)
+
+    def tell(self):
+        return self.pos
+
+    def flush(self):
+        pass
+
+    def take(self):
+        out, self.buf = bytes(self.buf), bytearray()
+        return out
+
+
+def _zip_stream(files):
+    """[(zip 안 이름, 경로)] → ZIP 바이트 조각. 사진·영상은 이미 압축돼 있어
+    저장(STORED)만 하고, 1MB씩 읽어 보내 메모리에 통째로 올리지 않는다."""
+    import zipfile
+    from datetime import datetime as _dt
+    sink = _ChunkSink()
+    with zipfile.ZipFile(sink, "w", compression=zipfile.ZIP_STORED) as zf:
+        for name, path in files:
+            info = zipfile.ZipInfo(name, date_time=_dt.fromtimestamp(
+                path.stat().st_mtime).timetuple()[:6])
+            with zf.open(info, "w", force_zip64=True) as dst, open(path, "rb") as src:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    yield sink.take()
+            yield sink.take()
+    yield sink.take()  # 중앙 디렉터리
+
+
+@app.post("/api/download")
+def download(ids: str = Form(...)):
+    """선택한 사진 원본 내려받기 — 한 장이면 원본 그대로, 여러 장이면 ZIP.
+
+    브라우저 폼 POST로 받는다(선택이 수천 장이면 URL에 다 못 싣고, 폼 제출은
+    브라우저가 파일 다운로드로 직접 처리해 페이지 메모리를 쓰지 않는다).
+    """
+    from datetime import datetime as _dt
+    from urllib.parse import quote
+    files, used = [], set()
+    for mid in dict.fromkeys(i for i in ids.split(",") if i):
+        m = db.get_media(mid)
+        p = _media_file(m) if m else None
+        if not p:
+            continue
+        name, n = p.name, 1
+        while name.lower() in used:  # 폴더가 달라도 파일명이 같을 수 있다
+            name = f"{p.stem}_{n}{p.suffix}"
+            n += 1
+        used.add(name.lower())
+        files.append((name, p))
+    if not files:
+        return JSONResponse({"error": "내려받을 파일이 없습니다"}, status_code=404)
+    if len(files) == 1:
+        return FileResponse(files[0][1], filename=files[0][0])
+    zname = f"photonest-{_dt.now():%Y%m%d-%H%M}-{len(files)}장.zip"
+    return StreamingResponse(
+        _zip_stream(files), media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zname)}"})
 
 
 @app.get("/thumbs/{item_id}.jpg")

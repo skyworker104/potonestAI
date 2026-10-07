@@ -239,7 +239,13 @@ $("#lb-next").onclick = nextPhoto;
 $("#lb-prev").onclick = prevPhoto;
 $("#lb-fav").onclick = toggleFavoriteCurrent;
 $("#lb-info-btn").onclick = () => setLbInfo(!lbInfoVisible);
-$("#lb-trash").onclick = async () => { await trashCurrent(); speak("휴지통으로 옮겼어요."); };
+// 버튼은 누르기 쉬워 실수로 지우기 쉽다 — 한 번 묻는다 (음성 "삭제해줘"는 명시적 요청이라 바로)
+$("#lb-trash").onclick = async () => {
+  if (!currentLbItem()) return;
+  if (!confirm("이 사진을 삭제할까요?\n휴지통으로 옮겨지며, 휴지통에서 복원할 수 있어요.")) return;
+  await trashCurrent();
+  speak("휴지통으로 옮겼어요.");
+};
 $("#lb-album").onclick = () => {
   const it = currentLbItem();
   if (it) openAlbumModal([it.id]);

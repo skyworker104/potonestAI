@@ -436,24 +436,47 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ---------------- 음성 합성 (TTS) ---------------- */
+// 지금 말하는 발화 — 전역으로 붙잡아 둔다. 크롬(특히 안드로이드)은 발화 객체의
+// 참조가 사라지면 onend를 부르지 않는 일이 있어, '답변 중' 상태로 멈춰 있었다.
+let currentUtterance = null;
+let speakWatch = null;
+
 function speak(text) {
   if (!("speechSynthesis" in window)) return;
   speaking = true; // onstart보다 먼저 설정해 인식 자동 재시작과의 경쟁 방지
   speechSynthesis.cancel();
   if (recognizing) { try { recog.stop(); } catch (_) {} }
   const u = new SpeechSynthesisUtterance(text);
+  currentUtterance = u;
   u.lang = "ko-KR";
   const ko = speechSynthesis.getVoices().find((v) => v.lang.startsWith("ko"));
   if (ko) u.voice = ko;
   u.rate = 1.05;
   u.onstart = () => renderVoiceUI();
+  let finished = false;
   const done = () => {
+    // 취소된 이전 발화의 늦은 onend가 지금 발화의 상태를 끄지 않게
+    if (finished || currentUtterance !== u) return;
+    finished = true;
+    clearInterval(speakWatch);
+    speakWatch = null;
+    currentUtterance = null;
     speaking = false;
     if (voiceMode) setTimeout(startListening, 300); // 계속 듣기만 (한 번 듣기는 이미 끝남)
     renderVoiceUI();
   };
   u.onend = done;
   u.onerror = done;
+  // 감시: onend가 끝내 안 와도 엔진이 말하기를 마쳤으면(말하는 중도, 대기도 아님)
+  // 끝난 것으로 본다. 엔진이 멈춰 버린 경우를 위해 문장 길이에 비례한 상한도 둔다.
+  const started = Date.now();
+  const maxMs = 4000 + text.length * 180;
+  clearInterval(speakWatch);
+  speakWatch = setInterval(() => {
+    const elapsed = Date.now() - started;
+    const idle = !speechSynthesis.speaking && !speechSynthesis.pending;
+    if ((idle && elapsed > 1500) || elapsed > maxMs) done();
+  }, 500);
   renderVoiceUI();
   speechSynthesis.speak(u);
 }

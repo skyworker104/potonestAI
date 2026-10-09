@@ -150,3 +150,16 @@ def test_upload_query_explains_it_is_not_the_capture_date(chat):
     r, _, _ = chat("최근 업로드된 사진 보여줘")
     assert r["reply"].startswith("최근 올린 사진을 찾았어요.")
     assert any(l.startswith("⬆️ 올린 시각 기준") for l in r["explanation"])
+
+
+def test_reply_wording_follows_order_media_and_year(chat, monkeypatch):
+    monkeypatch.setattr(search_retry, "run_with_retry",
+                        lambda plan, finder, **kw: ([{"id": f"m{i}"} for i in range(plan["top_k"])], []))
+    monkeypatch.setattr(main.search, "find", lambda **kw: [{"id": i} for i in range(3922)])
+    r, _, _ = chat("가장 오래된 사진 10장")
+    assert "가장 오래된 10장을 보여드려요" in r["reply"]
+    assert "📦 표시: 전체 3,922장 중 가장 오래된 10장" in r["explanation"]
+    r, _, _ = chat("최근 올린 동영상")
+    assert r["reply"].startswith("최근 올린 동영상을 찾았어요.")
+    r, _, _ = chat("작년 여름에 찍은 사진")
+    assert r["reply"].startswith("'작년 여름'에 찍은 사진을 찾았어요.")

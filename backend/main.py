@@ -434,22 +434,25 @@ def _day(iso):
     return iso[:10].replace("-", ".") if iso else None
 
 
-def _frame_phrase(fx, date_label):
+def _frame_phrase(fx, date_label, media_type=None):
     """내용·장소 없이 조건만으로 찾았을 때 답변 앞말 — "최근 올린 사진을"."""
+    noun = "동영상" if media_type == "video" else "사진"
+    obj = f"{noun}을"  # 사진을 / 동영상을 (둘 다 받침)
     if fx.get("added_span"):
-        return f"'{fx['added_span']}' 올린 사진을"
+        return f"'{fx['added_span']}' 올린 {obj}"
     if fx.get("upload"):
-        return "최근 올린 사진을"
+        return f"최근 올린 {obj}"
     if fx.get("favorites"):
-        return "즐겨찾기한 사진을"
+        return f"즐겨찾기한 {obj}"
     if fx.get("kind") == "screenshot":
         return "스크린샷을"
     if fx.get("order") == "taken_asc":
-        return "오래된 사진부터"
+        return f"오래된 {noun}부터"
     if fx.get("season"):
-        return f"{fx['season']}에 찍은 사진을"
+        when = f"{date_label} {fx['season']}" if date_label else fx["season"]
+        return f"'{when}'에 찍은 {obj}"
     if date_label:
-        return f"'{date_label}' 찍은 사진을"
+        return f"'{date_label}' 찍은 {obj}"
     return ""
 
 
@@ -632,7 +635,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     elif how:
         reply = f"{how} 찾았어요. {shown}"
     else:
-        phrase = _frame_phrase(fx, date_label)
+        phrase = _frame_phrase(fx, date_label, media_type)
         reply = f"{phrase} 찾았어요. {shown}" if phrase else f"찾았어요. {shown}"
     if low_conf and n:
         reply += (f" 다만 '{search_text}'와 확실히 일치하는 사진은 없어서,"
@@ -661,7 +664,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         media_type=media_type, dropped=dropped, relaxed=relaxed,
         low_conf=low_conf, refined=refined, frame=fx)
     if total:
-        explanation.append(f"📦 표시: 전체 {total:,}장 중 최근 {n:,}장")
+        explanation.append(f"📦 표시: 전체 {total:,}장 중 {which} {n:,}장")
     return {"reply": reply, "intent": "search", "engine": engine,
             "skill": skill_used, "place": place["name"] if place else None,
             "relaxed": relaxed, "results": results, "explanation": explanation,

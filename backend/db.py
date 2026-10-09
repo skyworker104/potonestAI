@@ -90,6 +90,10 @@ MIGRATIONS = [
     # 태그 도입 전의 임베딩은 전부 SigLIP2였음 — 소급 태깅 (멱등)
     "UPDATE media SET embed_model='google/siglip2-base-patch16-256' "
     "WHERE embedding IS NOT NULL AND embed_model IS NULL",
+    # 라이브러리에 들어온(업로드·백업·복사된) 시각 — "최근 올린 사진" 질의용.
+    # 촬영 시각(taken_at)과 다르다. 기존 행은 색인이 파일 ctime으로 채운다.
+    "ALTER TABLE media ADD COLUMN added_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_media_added ON media(added_at DESC)",
 ]
 
 
@@ -119,7 +123,7 @@ def init():
 
 MEDIA_COLS = (
     "id, path, type, taken_at, lat, lon, width, height, duration, favorite, "
-    "trashed_at, comment, place_name"
+    "trashed_at, comment, place_name, added_at"
 )
 
 
@@ -131,18 +135,20 @@ def row_to_item(r):
 
 def upsert_media(meta, embedding=None):
     emb = embedding.astype(np.float32).tobytes() if embedding is not None else None
+    # 들어온 시각은 처음 넣을 때만 — 파일이 바뀌어 다시 색인돼도 유지한다
+    added = meta.get("added_at") or datetime.now().isoformat(timespec="seconds")
     with conn() as c:
         c.execute(
             """INSERT INTO media (id, path, type, taken_at, lat, lon, width, height,
-                                  duration, sig, hash, embedding)
+                                  duration, sig, hash, embedding, added_at)
                VALUES (:id, :path, :type, :taken_at, :lat, :lon, :width, :height,
-                       :duration, :sig, :hash, :embedding)
+                       :duration, :sig, :hash, :embedding, :added_at)
                ON CONFLICT(id) DO UPDATE SET
                  path=:path, taken_at=:taken_at, lat=:lat, lon=:lon,
                  width=:width, height=:height, duration=:duration, sig=:sig,
                  hash=:hash,
                  embedding=COALESCE(:embedding, embedding)""",
-            dict(meta, embedding=emb),
+            dict(meta, embedding=emb, added_at=added),
         )
 
 
@@ -552,6 +558,19 @@ def clear_place_names():
     """저장된 지명을 모두 지운다 — 다음 색인에서 새 형식으로 다시 매긴다."""
     with conn() as c:
         c.execute("UPDATE media SET place_name=NULL WHERE place_name IS NOT NULL")
+
+
+def media_missing_added():
+    """들어온 시각이 비어 있는 활성 미디어 (id, path) — added_at 도입 전 행."""
+    with conn() as c:
+        rows = c.execute("SELECT id, path FROM media WHERE added_at IS NULL "
+                         "AND trashed_at IS NULL").fetchall()
+    return [(r["id"], r["path"]) for r in rows]
+
+
+def set_added_at(media_id, iso):
+    with conn() as c:
+        c.execute("UPDATE media SET added_at=? WHERE id=?", (iso, media_id))
 
 
 def set_place_name(media_id, name):

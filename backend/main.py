@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import appdist, db, immich, indexer, llm, remote, search, storage, upload
+from . import appdist, db, immich, indexer, llm, query_frame, remote, search, storage, upload
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -434,9 +434,28 @@ def _day(iso):
     return iso[:10].replace("-", ".") if iso else None
 
 
+def _frame_phrase(fx, date_label):
+    """내용·장소 없이 조건만으로 찾았을 때 답변 앞말 — "최근 올린 사진을"."""
+    if fx.get("added_span"):
+        return f"'{fx['added_span']}' 올린 사진을"
+    if fx.get("upload"):
+        return "최근 올린 사진을"
+    if fx.get("favorites"):
+        return "즐겨찾기한 사진을"
+    if fx.get("kind") == "screenshot":
+        return "스크린샷을"
+    if fx.get("order") == "taken_asc":
+        return "오래된 사진부터"
+    if fx.get("season"):
+        return f"{fx['season']}에 찍은 사진을"
+    if date_label:
+        return f"'{date_label}' 찍은 사진을"
+    return ""
+
+
 def _explain(*, place, place_text, search_text, date_from, date_to, date_label,
              hour_from, hour_to, person, media_type, dropped, relaxed,
-             low_conf, refined):
+             low_conf, refined, frame=None):
     """검색을 어떻게 해석했는지 한 줄씩 — 화면에 답변과 함께 표시(음성으로는 안 읽음).
 
     정상으로 찾은 경우에도 무엇을 조건으로 썼고 무엇을 뺐는지 보여 줘야
@@ -448,6 +467,15 @@ def _explain(*, place, place_text, search_text, date_from, date_to, date_label,
     if date_from or date_to:
         rng = f"{_day(date_from) or '처음'} ~ {_day(date_to) or '지금'}"
         lines.append(f"📅 기간: '{date_label}' → {rng}" if date_label else f"📅 기간: {rng}")
+    fx = frame or {}
+    if fx.get("added_from") or fx.get("added_to"):
+        rng = f"{_day(fx.get('added_from')) or '처음'} ~ {_day(fx.get('added_to')) or '지금'}"
+        lines.append(f"⬆️ 올린 시기: '{fx.get('added_span')}' → {rng} (촬영일이 아니라 올린 날)")
+    elif fx.get("upload"):
+        lines.append("⬆️ 올린 시각 기준 (촬영일이 아니라 라이브러리에 들어온 순서)")
+    if fx.get("season"):
+        ms = fx["months"]
+        lines.append(f"🍂 계절: '{fx['season']}' → {ms[0]}~{ms[-1]}월에 찍은 사진")
     if hour_from is not None:
         lines.append(f"🕐 시간대: {hour_from}시 ~ {hour_to}시")
     if place and place.get("radius_km"):
@@ -461,6 +489,19 @@ def _explain(*, place, place_text, search_text, date_from, date_to, date_label,
         lines.append(f"👤 인물: {person['name']}님이 나온 사진")
     if media_type == "video":
         lines.append("🎬 종류: 동영상만")
+    elif media_type == "image":
+        lines.append("🖼 종류: 사진만 (동영상 제외)")
+    if fx.get("kind") == "screenshot":
+        lines.append("📱 종류: 스크린샷만")
+    if fx.get("favorites"):
+        lines.append("⭐ 즐겨찾기한 사진만")
+    order_label = {"taken_asc": "오래된 순(촬영일)", "added_desc": "최근 올린 순",
+                   "taken_desc": "최근 찍은 순"}.get(fx.get("order"))
+    # 올린 시각 기준 질의는 위 '⬆️' 줄이 이미 순서를 말한다
+    if order_label and not fx.get("upload"):
+        lines.append(f"↕️ 정렬: {order_label}")
+    if fx.get("limit"):
+        lines.append(f"🔢 개수: {fx['limit']}장까지")
     if search_text:
         lines.append(f"🔎 사진 내용: '{search_text}' → 이미지 의미 검색"
                      + (" (확실히 일치하는 사진은 없어 비슷한 사진)" if low_conf else ""))
@@ -502,20 +543,25 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
                 media_type, person, engine, skill_used=None, exclude_ids=None,
                 hour_from=None, hour_to=None, place_text=None, base_ids=None,
                 skill_id=None, date_label=None, dropped=(), state=None,
-                notes=(), pending_skill=None, album=None):
+                notes=(), pending_skill=None, album=None, frame=None):
     from . import search_retry
     if state is None:
         state = _session(None)
+    fx = frame or {}
 
     person_ids = db.person_media_ids(person["id"]) if person else None
     only_ids = _combine_ids(base_ids, person_ids)
-    # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체
-    top_k = 60 if search_text else 1000
+    # 내용 검색(CLIP)은 관련도순 상위만, 위치/인물/날짜 필터만일 땐 그 그룹 전체.
+    # "10장만"처럼 개수를 말했으면 그만큼.
+    top_k = fx.get("limit") or (60 if search_text else 1000)
     plan = dict(
         search_text=search_text, date_from=date_from, date_to=date_to,
         media_type=media_type, raw_query=message, only_ids=only_ids,
         bbox=bbox, exclude_ids=exclude_ids, hour_from=hour_from,
         hour_to=hour_to, place_text=place_text, top_k=top_k,
+        added_from=fx.get("added_from"), added_to=fx.get("added_to"),
+        favorites=bool(fx.get("favorites")), kind=fx.get("kind"),
+        months=fx.get("months"), order=fx.get("order"),
     )
     # 저품질 판정 기준·영어 재시도 함수 주입 (AI 스택이 있을 때만)
     quality_bar = english_fn = None
@@ -543,8 +589,13 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         total = len(search.find(**dict(plan, top_k=10 ** 9)))
         if total <= n:
             total = None
-    shown = (f"모두 {total:,}장이에요. 그중 최근 {n:,}장을 보여드려요." if total
-             else f"모두 {n}장이에요.")
+    which = {"taken_asc": "가장 오래된", "added_desc": "최근 올린"}.get(fx.get("order"), "최근")
+    if fx.get("limit"):
+        shown = (f"{which} {n:,}장을 보여드려요. (조건에 맞는 사진은 모두 {total:,}장)" if total
+                 else f"모두 {n}장이에요.")
+    else:
+        shown = (f"모두 {total:,}장이에요. 그중 {which} {n:,}장을 보여드려요." if total
+                 else f"모두 {n}장이에요.")
     how = _interpretation(place, place_text, search_text)
     # 이미지 근거만 있고 최고점이 기준선 근처 → 결과는 보여주되 솔직히 밝힌다
     scores = [r["score"] for r in results if r.get("score") is not None]
@@ -581,7 +632,8 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
     elif how:
         reply = f"{how} 찾았어요. {shown}"
     else:
-        reply = f"찾았어요. {shown}"
+        phrase = _frame_phrase(fx, date_label)
+        reply = f"{phrase} 찾았어요. {shown}" if phrase else f"찾았어요. {shown}"
     if low_conf and n:
         reply += (f" 다만 '{search_text}'와 확실히 일치하는 사진은 없어서,"
                   " 비슷해 보이는 사진이라 정확하지 않을 수 있어요.")
@@ -607,7 +659,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         date_from=date_from, date_to=date_to, date_label=date_label,
         hour_from=hour_from, hour_to=hour_to, person=person,
         media_type=media_type, dropped=dropped, relaxed=relaxed,
-        low_conf=low_conf, refined=refined)
+        low_conf=low_conf, refined=refined, frame=fx)
     if total:
         explanation.append(f"📦 표시: 전체 {total:,}장 중 최근 {n:,}장")
     return {"reply": reply, "intent": "search", "engine": engine,
@@ -675,27 +727,32 @@ def chat(req: ChatRequest):
             album, message = hit
             base_ids = _album_ids(album)
 
-    meta = llm.quick_meta(message)
-    if meta["greeting"]:
+    # 조건(촬영·올린 시기, 정렬, 개수, 즐겨찾기, 종류, 계절, 시간대)은 규칙으로 확정하고
+    # 조건 말을 지운 나머지만 내용 해석에 쓴다 — 사양: claudedocs/search-query-cases.md
+    fr = query_frame.parse(message)
+    if fr["greeting"]:
         return {"reply": "안녕하세요! 찾고 싶은 사진을 말씀해 주세요.",
                 "intent": "chat", "engine": "instant", "results": []}
 
-    date_from, date_to, media_type = meta["date_from"], meta["date_to"], meta["media_type"]
-    hour_from, hour_to = meta["hour_from"], meta["hour_to"]
+    date_from, date_to, media_type = fr["date_from"], fr["date_to"], fr["media_type"]
+    hour_from, hour_to = fr["hour_from"], fr["hour_to"]
+    has_frame = query_frame.has_filter(fr)
     person = db.match_person_name(message)
 
     # 지명 감지 → 위치(GPS) 검색. 지명 뺀 나머지(residual)로 내용 의도 분석.
     # 지역 사전에 없으면 명소(산·공원·사찰 등) 사전 — LLM의 들쭉날쭉한 분류에
     # 맡기지 않고 여기서 먼저 잡는다.
-    place = places.detect(message) or landmarks.detect(message, exclude=_CONTENT_WORDS)
+    text = fr["residual"]
+    place = places.detect(text) or landmarks.detect(text, exclude=_CONTENT_WORDS)
     bbox = place["bbox"] if place else None
-    core = place["residual"] if place else message
+    core = place["residual"] if place else text
     # 상황 말(여행·놀러·휴가…)은 사진에 보이는 내용이 아니다. 다른 조건이 있으면
     # 뺀다 — 장소·기간과 AND로 묶이면 그 사진 대부분이 빠진다(일본 236장 → 2장).
     # 상황 말뿐이면 남긴다(빼면 아무 조건도 없이 전체가 나온다).
     cleaned, dropped = llm.strip_occasion(core)
-    if dropped and _has_other_condition(place, None, date_from, date_to, hour_from,
-                                        person, media_type, skills._strip_terms(cleaned)):
+    if dropped and (has_frame or _has_other_condition(
+            place, None, date_from, date_to, hour_from, person, media_type,
+            skills._strip_terms(cleaned))):
         core = cleaned
     else:
         dropped = []
@@ -709,7 +766,11 @@ def chat(req: ChatRequest):
 
     learn_from = None  # 스킬 후보로 삼을 LLM 해석의 원문 (확인 뒤에만 저장)
     # 장소만 남았거나 이어 묻기에서 바꾼 조건이 날짜 등뿐이면 LLM이 필요 없다
-    if has_content or (not place and not album and follow is None):
+    # 내용어가 없고 다른 조건이 있으면 LLM이 필요 없다 — "최근 업로드된 사진 보여줘"를
+    # LLM에 넘기면 남은 "사진 보여줘"를 잡담으로 보거나 엉뚱한 내용어를 만든다
+    if has_content or (follow is None and not album and not has_frame
+                       and not _has_other_condition(place, None, date_from, date_to,
+                                                    hour_from, person, media_type, None)):
         target = core
         skill, sim = skills.match(target)
         if skill:
@@ -748,8 +809,8 @@ def chat(req: ChatRequest):
     if search_text:
         rest, more = llm.strip_occasion(search_text)
         rest = skills._strip_terms(rest)
-        if more and _has_other_condition(place, place_text, date_from, date_to,
-                                         hour_from, person, media_type, rest):
+        if more and (has_frame or _has_other_condition(
+                place, place_text, date_from, date_to, hour_from, person, media_type, rest)):
             search_text = rest or None
             dropped += [w for w in more if w not in dropped]
 
@@ -772,7 +833,7 @@ def chat(req: ChatRequest):
         if known:
             place, bbox, place_text = known, known["bbox"], None
 
-    date_label = meta["date_span"]
+    date_label = fr["date_span"]
     if follow is not None:
         inherited = []
         if not place and not place_text:
@@ -807,7 +868,7 @@ def chat(req: ChatRequest):
 
     # 상황 말뿐인 요청("가족여행 사진")에서 LLM이 내용을 비우면 조건이 하나도
     # 없어 라이브러리 전체가 나온다 — 그럴 땐 상황 말이라도 내용으로 쓴다.
-    if base_ids is None and not _has_other_condition(
+    if base_ids is None and not has_frame and not _has_other_condition(
             place, place_text, date_from, date_to, hour_from, person, media_type,
             search_text):
         occasion = llm.strip_occasion(message)[1]
@@ -828,7 +889,7 @@ def chat(req: ChatRequest):
         hour_from=hour_from, hour_to=hour_to, place_text=place_text,
         base_ids=base_ids, skill_id=skill_id,
         date_label=date_label, dropped=dropped, state=ls, notes=notes,
-        pending_skill=pending_skill, album=album,
+        pending_skill=pending_skill, album=album, frame=fr,
     )
 
 

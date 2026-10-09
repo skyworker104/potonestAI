@@ -348,6 +348,15 @@ def scan_files():
     ]
 
 
+def file_added_at(p: Path):
+    """파일이 이 기기에 들어온 시각 — ctime(inode 생성·변경). 업로드·백업·복사로
+    파일이 만들어질 때 찍히고, 사진 앱이 보존한 mtime(대개 촬영 시각)과 다르다."""
+    try:
+        return datetime.fromtimestamp(p.stat().st_ctime).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
 def _index_file(p: Path, existing):
     rel = str(p.relative_to(PHOTOS_DIR))
     sig = f"{p.stat().st_size}-{int(p.stat().st_mtime)}"
@@ -376,6 +385,7 @@ def _index_file(p: Path, existing):
         "taken_at": taken_at, "lat": lat, "lon": lon,
         "width": w, "height": h, "duration": round(duration, 1),
         "sig": sig, "hash": content_hash(p),
+        "added_at": file_added_at(p),
     }
     db.upsert_media(meta)
 
@@ -540,6 +550,15 @@ def _run_pipeline(force):
 
         db.remove_missing(present)
         _state["ready"] = True
+
+        # 들어온 시각이 없는 옛 행(added_at 도입 전) — 파일 ctime으로 채운다
+        try:
+            for mid, rel in db.media_missing_added():
+                at = file_added_at(PHOTOS_DIR / rel)
+                if at:
+                    db.set_added_at(mid, at)
+        except Exception:
+            pass
 
         # GPS → 지명 매핑 (역지오코딩) — "협재 사진" 같은 지명 검색용.
         # 최초 1회 GeoNames 다운로드(~12MB), 이후 순수 계산이라 빠름.

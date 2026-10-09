@@ -377,9 +377,44 @@ def _named_matches(search_text, allowed_ids, by_id):
     return hits
 
 
+# 스크린샷 판별 — 폰들이 붙이는 파일명·폴더명 (Screenshot_20250804_..., 스크린샷, Capture)
+_SCREENSHOT_PATH = re.compile(r"screen\s*_?shot|스크린샷|capture|캡처|캡쳐", re.I)
+
+
+def _in_added_range(item, added_from, added_to):
+    """라이브러리에 들어온 시각 필터 ("오늘 올린 사진")."""
+    if not (added_from or added_to):
+        return True
+    at = item.get("added_at")
+    if not at:
+        return False
+    return (not added_from or at >= added_from) and (not added_to or at <= added_to)
+
+
+def _in_months(item, months):
+    if not months:
+        return True
+    t = item.get("taken_at") or ""
+    return len(t) >= 7 and t[5:7].isdigit() and int(t[5:7]) in months
+
+
+def _ordered(items, order):
+    """정렬 — taken_desc(기본, 이미 그 순서) / taken_asc(오래된 순) / added_desc(최근 올린 순).
+    값이 없는 항목은 뒤로."""
+    if order == "taken_asc":
+        return sorted(items, key=lambda it: (it.get("taken_at") is None, it.get("taken_at") or ""))
+    if order == "added_desc":
+        return sorted(items, key=lambda it: it.get("added_at") or "", reverse=True)
+    if order == "taken_desc":
+        return sorted(items, key=lambda it: it.get("taken_at") or "", reverse=True)
+    return items
+
+
 def find(search_text, date_from=None, date_to=None, media_type=None,
          raw_query=None, only_ids=None, bbox=None, exclude_ids=None,
-         hour_from=None, hour_to=None, place_text=None, top_k=MAX_RESULTS):
+         hour_from=None, hour_to=None, place_text=None, top_k=MAX_RESULTS,
+         added_from=None, added_to=None, favorites=False, kind=None,
+         months=None, order=None):
     from . import places
     pool = db.list_photos(ids=only_ids, limit=100000) if only_ids is not None \
         else db.list_photos(limit=100000)
@@ -388,6 +423,10 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         it for it in pool
         if _in_date_range(it, date_from, date_to)
         and _in_hour_range(it, hour_from, hour_to)
+        and _in_added_range(it, added_from, added_to)
+        and _in_months(it, months)
+        and (not favorites or it.get("favorite"))
+        and (kind != "screenshot" or _SCREENSHOT_PATH.search(it["path"] or ""))
         and (media_type in (None, "", "all") or it["type"] == media_type)
         and it["id"] not in exclude
         # 지명(위치) 검색이면 GPS가 해당 지역 안인 사진만 (정확한 장소 판정)
@@ -411,10 +450,10 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
             return []
 
     if not search_text:
-        # 검색어 없이 위치/지명/인물/날짜만 → 그 그룹 전체를 최신순으로
+        # 검색어 없이 위치/지명/인물/날짜만 → 그 그룹 전체를 (요청한) 순서로
         if place_text:
             top_k = max(top_k, len(candidates))
-        return [dict(it, score=None) for it in candidates[:top_k]]
+        return [dict(it, score=None) for it in _ordered(candidates, order)[:top_k]]
 
     by_id = {it["id"]: it for it in candidates}
     allowed_ids = set(by_id)
@@ -448,7 +487,7 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         for it in _metadata_find(search_text, candidates, top_k):
             merged.setdefault(it["id"], P["ocr_base"])
         ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
-        return [dict(by_id[mid], score=round(s, 3)) for mid, s in ranked]
+        return _ordered([dict(by_id[mid], score=round(s, 3)) for mid, s in ranked], order)
 
     # 1) 이미지 의미 검색 (같은 모델로 만든 벡터만 — 백엔드 간 비호환)
     # 핵심 주제어(subject)로 인코딩 — 문장 전체를 넣으면 임베딩이 희석돼
@@ -463,11 +502,11 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         qtext = _to_english(subject) if embedder.needs_english() else subject
         qv = embedder.encode_text([qtext])[0]
         scores = emb[idxs] @ qv
-        order = np.argsort(-scores)
-        top = image_top = float(scores[order[0]])
+        rank = np.argsort(-scores)
+        top = image_top = float(scores[rank[0]])
         if top >= P["score_threshold"]:
             cutoff = max(P["score_threshold"], top - P["score_margin"])
-            for oi in order[:top_k]:
+            for oi in rank[:top_k]:
                 s = float(scores[oi])
                 if s < cutoff:
                     break
@@ -514,4 +553,5 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
     if not merged:
         return []
     ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
-    return [dict(by_id[mid], score=round(s, 3)) for mid, s in ranked]
+    # 관련도로 고른 뒤, 정렬을 요청했으면("가장 오래된 강아지 사진") 그 순서로
+    return _ordered([dict(by_id[mid], score=round(s, 3)) for mid, s in ranked], order)

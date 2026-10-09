@@ -2,7 +2,7 @@
   "expo": {
     "name": "PhotoNest 업로더",
     "slug": "photonest-uploader",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "orientation": "portrait",
     "scheme": "photonest",
     "userInterfaceStyle": "dark",
@@ -29,11 +29,11 @@
           "processing"
         ]
       },
-      "buildNumber": "3"
+      "buildNumber": "4"
     },
     "android": {
       "package": "com.photonest.uploader",
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundImage": "./assets/adaptive-bg.png"
@@ -82,7 +82,7 @@
       "eas": {
         "projectId": "fdf2c72c-3ede-4321-b43a-7b96da598c74"
       },
-      "buildDate": "2026-08-21"
+      "buildDate": "2026-10-10"
     },
     "owner": "y73bs104"
   }

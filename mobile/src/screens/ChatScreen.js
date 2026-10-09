@@ -9,6 +9,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 
 import { analyze } from "../lib/assistant";
+import { parseServerQr, displayAddress } from "../lib/serverAddress";
 import { checkServer } from "../lib/api";
 import { runBackup, cancelBackup } from "../lib/backup";
 import { loadConfig, saveConfig } from "../lib/storage";
@@ -34,6 +35,8 @@ export default function ChatScreen() {
   const [screen, setScreen] = useState("chat");   // chat | settings | server
   const [listening, setListening] = useState(false);
   const [heard, setHeard] = useState("");         // 인식 중인 말 (중간 결과)
+  const [awaiting, setAwaiting] = useState(null); // "server_ip" — 새 서버 주소를 물어본 상태
+  const scannedRef = useRef(false);               // 한 번 찍으면 같은 QR이 연달아 들어와도 무시
   const scrollRef = useRef(null);
   const [perm, requestPerm] = useCameraPermissions();
 
@@ -115,8 +118,10 @@ export default function ChatScreen() {
     const ctx = {
       connected: !!cfg?.serverUrl, serverUrl: cfg?.serverUrl,
       backing: busy, done: progress?.done, total: progress?.total,
+      awaiting,
     };
     const r = analyze(text, ctx);
+    setAwaiting(r.awaiting || null);
     addAI(r.reply);
     if (r.action) await runAction(r.action);
   }
@@ -199,20 +204,36 @@ export default function ChatScreen() {
   }
 
   async function doConnect(serverUrl) {
+    // 저장은 연결이 확인된 뒤에만 — 틀린 주소로 바꿔 기존 연결을 잃지 않게.
+    const prev = (await loadConfig()).serverUrl;
+    const changing = !!prev && prev !== serverUrl;
     try {
       await checkServer(serverUrl);
       const next = await saveConfig({ serverUrl });
       setCfg(next);
-      addAI(`✅ 연결됐어요! 이제 “백업 시작”이라고 하면 사진을 올려드려요. “와이파이에서 자동으로 올려줘”라고 하면 알아서 백업해 둘게요.`);
+      addAI(changing
+        ? `✅ 서버 주소를 바꿨어요: ${displayAddress(prev)} → ${displayAddress(serverUrl)}\n백업·자동백업·서버 사진 보기 모두 새 주소로 연결돼요.`
+        : `✅ 연결됐어요! 이제 “백업 시작”이라고 하면 사진을 올려드려요. “와이파이에서 자동으로 올려줘”라고 하면 알아서 백업해 둘게요.`);
     } catch {
       addAI(
-        `‘${serverUrl}’에 연결하지 못했어요. 확인해 주세요:\n` +
-        "① 폰과 PC가 같은 와이파이인지\n" +
-        "② PC에서 PhotoNest 서버가 켜져 있는지\n" +
+        `‘${displayAddress(serverUrl)}’에 연결하지 못했어요. 확인해 주세요:\n` +
+        "① 폰과 서버가 같은 와이파이인지\n" +
+        "② 서버(태블릿·PC)에서 PhotoNest가 켜져 있는지\n" +
         "③ 주소가 맞는지 (예: 192.168.0.10:8765)\n" +
-        "주소를 직접 입력해 다시 시도하셔도 돼요."
+        (changing
+          ? `기존 주소(${displayAddress(prev)})는 그대로 두었어요. 새 주소를 다시 말씀하시거나 ‘QR 스캔’으로 찍어 주세요.`
+          : "주소를 직접 입력해 다시 시도하셔도 돼요.")
       );
+      if (changing) setAwaiting("server_ip");
     }
+  }
+
+  /** 설정 화면 등에서 "대화로 변경" — 어시스턴트가 새 주소를 묻는 데서 시작. */
+  function startChangeServer() {
+    setScreen("chat");
+    const r = analyze("서버 주소 변경", { connected: !!cfg?.serverUrl, serverUrl: cfg?.serverUrl });
+    setAwaiting(r.awaiting || null);
+    addAI(r.reply);
   }
 
   async function ensureMediaPermission() {
@@ -250,15 +271,22 @@ export default function ChatScreen() {
       const res = await requestPerm();
       if (!res.granted) { addAI("카메라 권한이 없어 QR을 못 읽어요. 서버 주소를 직접 입력해 주세요."); return; }
     }
+    scannedRef.current = false;
     setScanning(true);
   }
 
   function onScanned({ data }) {
+    if (scannedRef.current) return;
+    scannedRef.current = true;
     setScanning(false);
-    // QR 내용이 http://...:8765/upload 또는 서버 주소
-    const m = data.match(/https?:\/\/[\d.]+:\d+/);
-    const url = m ? m[0] : data;
-    addAI(`QR을 읽었어요: ${url}`);
+    setAwaiting(null);
+    // 서버 화면 ‘폰 연결’ 탭의 QR — 전용 앱(…/download/app)이든 1번(…/upload)이든 서버 주소가 들어 있다.
+    const url = parseServerQr(data);
+    if (!url) {
+      addAI("PhotoNest 서버 QR이 아니에요. 서버 화면의 ‘폰 연결’ 탭에 있는 QR을 찍어 주세요.");
+      return;
+    }
+    addAI(`QR을 읽었어요: ${displayAddress(url)}`);
     doConnect(url);
   }
 
@@ -269,7 +297,7 @@ export default function ChatScreen() {
         <TouchableOpacity style={s.scanCancel} onPress={() => setScanning(false)}>
           <Text style={{ color: "#fff", fontSize: 16 }}>닫기</Text>
         </TouchableOpacity>
-        <Text style={s.scanHint}>PC 화면의 QR을 비춰주세요</Text>
+        <Text style={s.scanHint}>서버 화면 ‘폰 연결’ 탭의 QR을 비춰주세요</Text>
       </View>
     );
   }
@@ -281,6 +309,8 @@ export default function ChatScreen() {
         onClose={() => setScreen("chat")}
         onPickAlbums={() => { setScreen("chat"); openAlbumPicker(); }}
         onOpenServer={() => setScreen("server")}
+        onScanServer={() => { setScreen("chat"); openScanner(); }}
+        onChangeServerByChat={startChangeServer}
       />
     );
   }
@@ -368,7 +398,7 @@ export default function ChatScreen() {
       )}
 
       <View style={s.quick}>
-        {["백업 시작", "서버 사진 보기", "리모콘", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "도움말"].map((q) => (
+        {["백업 시작", "서버 사진 보기", "리모콘", "폴더 선택", "와이파이 자동백업", "얼마나 했어?", "QR 스캔", "서버 IP 변경", "도움말"].map((q) => (
           <TouchableOpacity key={q} style={s.chip} onPress={() => (q === "QR 스캔" ? openScanner() : handle(q))}>
             <Text style={s.chipText}>{q}</Text>
           </TouchableOpacity>

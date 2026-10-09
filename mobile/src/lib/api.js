@@ -1,10 +1,17 @@
 /** PhotoNest 서버 연동 — 서버 확인, 원본(위치정보 포함) 사진 업로드. */
 import * as FileSystem from "expo-file-system";
 
-export async function checkServer(serverUrl) {
-  const r = await fetch(`${serverUrl}/api/status`, { method: "GET" });
-  if (!r.ok) throw new Error("서버 응답 오류");
-  return r.json();
+export async function checkServer(serverUrl, timeoutMs = 8000) {
+  // 없는 IP는 응답 없이 오래 매달린다 — 주소를 바꿔 볼 때 대화가 멈추지 않게 끊는다.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${serverUrl}/api/status`, { method: "GET", signal: ctl.signal });
+    if (!r.ok) throw new Error("서버 응답 오류");
+    return r.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

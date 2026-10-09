@@ -8,7 +8,8 @@
     "ios": "expo run:ios",
     "test:assistant": "node src/lib/assistant.test.js",
     "test:server-check": "node src/lib/serverCheck.test.js",
-    "test": "node src/lib/assistant.test.js && node src/lib/serverCheck.test.js"
+    "test:server-address": "node src/lib/serverAddress.test.js",
+    "test": "node src/lib/assistant.test.js && node src/lib/serverCheck.test.js && node src/lib/serverAddress.test.js"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.23.1",

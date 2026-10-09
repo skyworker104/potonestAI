@@ -7,8 +7,12 @@
  *
  * analyze(text, ctx) → { intent, slots, reply, action }
  *   action: 앱이 실행할 명령 { type, ...payload } 또는 null
- *   ctx:    현재 상태 { connected, serverUrl, autoBackup, backing, wifi, scope }
+ *   ctx:    현재 상태 { connected, serverUrl, autoBackup, backing, wifi, scope, awaiting }
+ *           awaiting === "server_ip" — 직전에 새 서버 주소를 물어본 상태
+ *   반환에 awaiting이 있으면 앱이 다음 말까지 그 문맥을 기억한다.
  */
+
+const { extractServerUrl, displayAddress } = require("./serverAddress");
 
 const SYNONYMS = {
   // 의도별 트리거 표현 (부분 문자열 매칭)
@@ -32,10 +36,13 @@ const SYNONYMS = {
   greeting: ["안녕", "하이", "헬로", "hi", "hello", "반가"],
   remote: ["리모콘", "리모컨", "리모트", "말로 조종", "음성으로 조종", "말로 시켜"],
   settings: ["설정", "환경설정", "앱버전", "앱 버전", "버전", "정보"],
+  // 서버 주소 변경 — 대상(서버/IP/주소)과 바꾸는 말이 함께 있어야 한다.
+  server_subject: ["서버", "아이피", "ip", "주소", "연결", "접속"],
+  server_change: ["변경", "바꾸", "바꿔", "바꿀", "바뀌", "바뀐", "수정", "재연결", "다시 연결", "다시연결", "다른 서버", "새 서버", "새로운 서버", "새 주소", "새 아이피", "새 ip"],
+  qr_words: ["qr", "큐알", "스캔", "찍"],
+  cancel: ["취소", "됐어", "그대로", "안 바꿔", "안바꿔", "그만", "아니"],
 };
 
-const IP_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{2,5}))?\b/;
-const URL_RE = /https?:\/\/[^\s]+/i;
 const N_RE = /(\d+)\s*(장|개)/;
 
 function has(text, key) {
@@ -57,23 +64,59 @@ function analyze(rawText, ctx = {}) {
   const text = (rawText || "").toLowerCase().replace(/\s+/g, " ").trim();
   const slots = {};
 
-  // 1) 서버 주소가 문장에 있으면 우선 연결
-  const url = text.match(URL_RE);
-  const ip = text.match(IP_RE);
-  if (url || ip) {
-    let server;
-    if (url) server = url[0];
-    else {
-      const port = ip[5] || "8765";
-      server = `http://${ip[1]}.${ip[2]}.${ip[3]}.${ip[4]}:${port}`;
-    }
+  const awaitingIp = ctx.awaiting === "server_ip";
+
+  // 1) 서버 주소가 문장에 있으면 우선 연결 (주소를 물어본 직후엔 끝자리만 말해도 된다)
+  const server = extractServerUrl(text, { current: ctx.serverUrl, lastOnly: awaitingIp });
+  if (server) {
     slots.serverUrl = server;
+    const changing = ctx.connected && ctx.serverUrl && ctx.serverUrl !== server;
     return {
-      intent: "connect",
+      intent: changing ? "change_server" : "connect",
       slots,
-      reply: `좋아요! ${server} 서버에 연결해 볼게요. 잠시만요…`,
+      reply: changing
+        ? `서버 주소를 ${displayAddress(ctx.serverUrl)} → ${displayAddress(server)}(으)로 바꿔 볼게요. 연결되는지 확인하는 중…`
+        : `좋아요! ${server} 서버에 연결해 볼게요. 잠시만요…`,
       action: { type: "connect", serverUrl: server },
     };
+  }
+
+  // 1.1) 새 주소를 기다리는 중 — QR로 하겠다 / 취소 / 못 알아들음
+  if (awaitingIp) {
+    if (has(text, "qr_words")) {
+      return {
+        intent: "change_server",
+        slots,
+        reply: "카메라를 열게요. 서버 화면의 ‘폰 연결’ 탭에 있는 QR(전용 앱 QR이나 1번 QR)을 비춰주세요.",
+        action: { type: "open_qr_scanner" },
+      };
+    }
+    if (has(text, "cancel")) {
+      return {
+        intent: "change_server_cancel",
+        slots,
+        reply: ctx.serverUrl
+          ? `알겠어요, 지금 주소(${displayAddress(ctx.serverUrl)})를 그대로 쓸게요.`
+          : "알겠어요. 연결하고 싶을 때 ‘QR 스캔’을 누르거나 주소를 알려주세요.",
+        action: null,
+      };
+    }
+    // 숫자로만 된 말(주소를 말하려다 틀린 것)은 다시 묻는다. "최근 30장만" 같은 명령은 아래로.
+    if (/\d/.test(text) && !text.replace(/[\d\s.,:]|점|쩜|포트|번|이야|야|요|으로|로/g, "")) {
+      return {
+        intent: "change_server",
+        slots,
+        reply: "주소를 알아듣지 못했어요. 192.168.45.232 처럼 숫자 네 개를 점으로 이어 말씀해 주세요. (포트가 8765가 아니면 192.168.45.232:8000 처럼 붙여 주세요.) ‘QR’이라고 하면 카메라를 열고, ‘취소’라고 하면 그대로 둘게요.",
+        action: null,
+        awaiting: "server_ip",
+      };
+    }
+    // 그 밖의 말은 주소 변경을 그만두고 평소처럼 처리한다.
+  }
+
+  // 1.2) 서버 IP 변경 요청 — "서버 IP 변경해줘", "주소 바꿔줘", "다른 서버로 연결"
+  if (has(text, "server_subject") && has(text, "server_change") && !has(text, "albums")) {
+    return changeServerPrompt(text, ctx);
   }
 
   // 1.5) 백업할 폴더(앨범) 선택/변경
@@ -222,13 +265,18 @@ function analyze(rawText, ctx = {}) {
     };
   }
 
+  // 7.8) 이미 연결된 상태에서 "서버 연결해줘"/"QR 찍을게" — 주소를 바꾸려는 뜻으로 본다.
+  if (ctx.connected && has(text, "connect")) {
+    return changeServerPrompt(text, ctx);
+  }
+
   // 8) 도움말 / 인사 / 감사
   if (has(text, "help")) {
     return {
       intent: "help",
       slots,
       reply:
-        "이렇게 말씀하시면 돼요:\n• “서버 연결해줘” 또는 주소 입력\n• “백업 시작” / “최근 사진만 올려줘”\n• “와이파이에서 자동으로 올려줘”\n• “서버 사진 보기” — 백업된 사진을 앱 안에서 검색·구경\n• “리모콘” — 폰에서 말하면 서버 화면이 그대로 실행해요\n• “설정” — 앱 버전·연결 상태 확인\n• “얼마나 했어?” / “멈춰”\n사진은 원본 그대로(위치정보 포함) 회원님 서버로만 전송돼요.",
+        "이렇게 말씀하시면 돼요:\n• “서버 연결해줘” 또는 주소 입력\n• “서버 IP 변경해줘” — 새 주소를 말하거나 QR을 다시 찍어 바꿔요\n• “백업 시작” / “최근 사진만 올려줘”\n• “와이파이에서 자동으로 올려줘”\n• “서버 사진 보기” — 백업된 사진을 앱 안에서 검색·구경\n• “리모콘” — 폰에서 말하면 서버 화면이 그대로 실행해요\n• “설정” — 앱 버전·연결 상태 확인\n• “얼마나 했어?” / “멈춰”\n사진은 원본 그대로(위치정보 포함) 회원님 서버로만 전송돼요.",
       action: { type: "show_help" },
     };
   }
@@ -252,6 +300,29 @@ function analyze(rawText, ctx = {}) {
     slots,
     reply: "음, 잘 이해하지 못했어요. ‘백업 시작’, ‘자동으로 올려줘’, ‘얼마나 했어?’처럼 말씀해 주시겠어요? (‘도움말’이라고 하면 사용법을 보여드려요.)",
     action: null,
+  };
+}
+
+/** 새 서버 주소를 묻는다. QR로 하겠다는 말이 있으면 바로 카메라를 연다. */
+function changeServerPrompt(text, ctx) {
+  const cur = ctx.serverUrl ? `지금은 ${displayAddress(ctx.serverUrl)}에 연결돼 있어요.\n` : "";
+  if (has(text, "qr_words")) {
+    return {
+      intent: "change_server",
+      slots: {},
+      reply: `${cur}카메라를 열게요. 서버 화면의 ‘폰 연결’ 탭에 있는 QR(전용 앱 QR이나 1번 QR)을 비춰주세요.`,
+      action: { type: "open_qr_scanner" },
+    };
+  }
+  return {
+    intent: "change_server",
+    slots: {},
+    reply:
+      `${cur}새 서버 주소를 말씀해 주세요. 예: 192.168.45.232` +
+      (ctx.serverUrl ? " — 끝자리만 바뀌었으면 ‘233’처럼 끝자리만 말해도 돼요." : "") +
+      "\n또는 아래 ‘QR 스캔’을 눌러 서버 화면 ‘폰 연결’ 탭의 QR을 찍어도 바뀌어요. 그대로 두려면 ‘취소’라고 해주세요.",
+    action: null,
+    awaiting: "server_ip",
   };
 }
 

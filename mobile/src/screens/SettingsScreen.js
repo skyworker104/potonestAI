@@ -3,6 +3,7 @@ import React from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
 
 import { versionLine } from "../lib/version";
+import { displayAddress } from "../lib/serverAddress";
 import { C } from "../theme";
 
 function Row({ label, value, hint, onPress, action }) {
@@ -19,7 +20,9 @@ function Row({ label, value, hint, onPress, action }) {
   );
 }
 
-export default function SettingsScreen({ cfg, onClose, onPickAlbums, onOpenServer }) {
+export default function SettingsScreen({
+  cfg, onClose, onPickAlbums, onOpenServer, onScanServer, onChangeServerByChat,
+}) {
   const folders = cfg?.albums?.length
     ? cfg.albums.map((a) => a.title).join(", ")
     : "전체 사진";
@@ -38,9 +41,23 @@ export default function SettingsScreen({ cfg, onClose, onPickAlbums, onOpenServe
         <Text style={s.section}>서버</Text>
         <Row
           label="연결 상태"
-          value={cfg?.serverUrl || "연결되지 않음"}
-          hint={cfg?.serverUrl ? null : "대화창에서 ‘QR 스캔’으로 연결하세요."}
+          value={cfg?.serverUrl ? `서버 IP ${displayAddress(cfg.serverUrl)}` : "연결되지 않음"}
+          hint={cfg?.serverUrl
+            ? "공유기를 다시 켜 서버 IP가 바뀌었다면 아래에서 바꾸세요."
+            : "아래 ‘QR 스캔’으로 서버 화면의 QR을 찍어 연결하세요."}
         />
+        <View style={s.btnRow}>
+          <TouchableOpacity style={s.btn} onPress={onScanServer} accessibilityLabel="QR을 찍어 서버 IP 변경">
+            <Text style={s.btnText}>📷 QR 스캔</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.btn} onPress={onChangeServerByChat} accessibilityLabel="대화로 서버 IP 변경">
+            <Text style={s.btnText}>💬 대화로 IP 변경</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={s.btnHint}>
+          QR은 서버 화면 ‘폰 연결’ 탭의 전용 앱 QR이나 1번 QR 어느 것이든 돼요.
+          대화창에서 “서버 IP 변경해줘”라고 해도 바꿀 수 있어요.
+        </Text>
         {!!cfg?.serverUrl && (
           <Row
             label="서버 사진 보기"
@@ -93,4 +110,11 @@ const s = StyleSheet.create({
   rowValue: { color: C.muted, fontSize: 13, marginTop: 4 },
   rowHint: { color: C.muted, fontSize: 11.5, marginTop: 5, lineHeight: 17 },
   rowAction: { color: C.muted, fontSize: 20 },
+  btnRow: { flexDirection: "row", gap: 8, marginBottom: 6 },
+  btn: {
+    flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+    backgroundColor: "rgba(79,140,255,.14)", borderWidth: 1, borderColor: C.accent,
+  },
+  btnText: { color: C.text, fontSize: 13.5, fontWeight: "600" },
+  btnHint: { color: C.muted, fontSize: 11.5, lineHeight: 17, marginHorizontal: 4, marginBottom: 8 },
 });

@@ -1,6 +1,8 @@
 /* 어시스턴트 의미 분석 검증 — node src/lib/assistant.test.js */
 const { analyze } = require("./assistant");
 
+const CUR = { connected: true, serverUrl: "http://192.168.45.232:8765" };
+
 const cases = [
   // [발화, 기대 intent, ctx]
   ["안녕", "greeting", {}],
@@ -43,6 +45,25 @@ const cases = [
   ["뭐 할 수 있어?", "help", {}],
   ["고마워", "thanks", {}],
   ["오늘 날씨 어때", "unknown", {}],
+  // 서버 IP 변경 — 연결된 상태에서도 대화로 바꿀 수 있어야 한다
+  ["서버IP 변경해줘", "change_server", CUR],
+  ["서버 아이피 바꿔줘", "change_server", CUR],
+  ["서버 주소가 바뀌었어", "change_server", CUR],
+  ["다른 서버로 연결할래", "change_server", CUR],
+  ["서버 연결해줘", "change_server", CUR],                        // 이미 연결됨 → 변경으로
+  ["QR 찍을게", "change_server", CUR],
+  ["192.168.45.233", "change_server", CUR],                       // 연결 중 새 주소 → 변경
+  ["192.168.45.232", "connect", CUR],                             // 같은 주소면 재연결
+  ["233", "change_server", { ...CUR, awaiting: "server_ip" }],     // 끝자리만
+  ["192 점 168 점 0 점 9", "change_server", { ...CUR, awaiting: "server_ip" }],
+  ["999.1.1.1", "change_server", { ...CUR, awaiting: "server_ip" }], // 잘못된 주소 → 다시 묻기
+  ["QR로 할게", "change_server", { ...CUR, awaiting: "server_ip" }],
+  ["취소", "change_server_cancel", { ...CUR, awaiting: "server_ip" }],
+  ["백업 시작", "backup_now", { ...CUR, awaiting: "server_ip" }],  // 딴 얘기면 평소대로
+  ["최근 30장만", "set_scope", { ...CUR, awaiting: "server_ip" }],
+  ["233", "unknown", CUR],                                        // 묻지 않았으면 끝자리로 안 봄
+  ["백업 폴더 바꿔줘", "pick_albums", CUR],                        // '바꿔'가 서버 변경으로 새면 안 됨
+  ["자동백업 설정 변경", "auto_on", CUR],
 ];
 
 let pass = 0;
@@ -60,4 +81,20 @@ const s1 = analyze("192.168.0.10:8765 연결", {});
 console.log("\n서버주소 추출:", s1.slots.serverUrl, "| action:", s1.action.type);
 const s2 = analyze("최근 30장만 올려줘", { connected: true });
 console.log("범위 추출:", JSON.stringify(s2.slots), "| action:", s2.action.type);
+// 서버 변경 슬롯
+const checks = [
+  [analyze("233", { ...CUR, awaiting: "server_ip" }).slots.serverUrl, "http://192.168.45.233:8765"],
+  [analyze("192 점 168 점 0 점 9", { ...CUR, awaiting: "server_ip" }).slots.serverUrl, "http://192.168.0.9:8765"],
+  [analyze("서버 IP 변경해줘", CUR).awaiting, "server_ip"],
+  [analyze("QR 찍을게", CUR).action.type, "open_qr_scanner"],
+  [analyze("http://192.168.0.7:8765/upload 로 연결", {}).slots.serverUrl, "http://192.168.0.7:8765"],
+];
+let slotOk = 0;
+for (const [got, want] of checks) {
+  const ok = got === want;
+  slotOk += ok ? 1 : 0;
+  console.log(`${ok ? "✓" : "✗"} 슬롯 ${got}${ok ? "" : ` (기대 ${want})`}`);
+}
+if (slotOk !== checks.length) pass -= 1;
+
 process.exit(pass === cases.length ? 0 : 1);

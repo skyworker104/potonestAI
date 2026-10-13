@@ -41,11 +41,13 @@ echo "→ $DISTRO(proot) 설치 중… (최초 1회, 수 분)"
 proot-distro install "$DISTRO" 2>/dev/null || echo "  ✓ $DISTRO 이미 설치됨"
 
 # 바인드 마운트: 프로젝트 + 내부 공유저장소 + (있으면) SD카드
+# SD 카드는 /proc/mounts에서 찾는다 — ~/storage/external-0은 카드가 아니라 내부
+# 저장소의 앱 폴더(Android/data/com.termux/files)라서, 카드가 없을 때 그걸
+# SD로 잘못 묶었었다. 카드 이름(XXXX-XXXX)은 포맷하면 바뀌므로 실행 스크립트도
+# 시작할 때마다 다시 찾는다.
+find_sd() { grep -oE ' /storage/[0-9A-F]{4}-[0-9A-F]{4} ' /proc/mounts | head -1 | tr -d ' '; }
 BINDS="--bind $PROJ:/opt/photonest --bind $HOME/storage/shared:/media/shared"
-SD=""
-for d in "$HOME"/storage/external-*; do
-  [ -d "$d" ] && SD="$d" && break
-done
+SD=$(find_sd)
 [ -n "$SD" ] && BINDS="$BINDS --bind $SD:/media/sdcard"
 
 echo "→ $DISTRO 안에 의존성 + PhotoNest 설치 중…"
@@ -111,8 +113,7 @@ proot-distro login "$DISTRO" $BINDS -- bash -c '
 cd "\$(dirname "\$0")"
 export AI_SEARCH=$AI_SEARCH
 $EXPORT_BACKEND
-# 사진 폴더: 내부 공유저장소 /media/shared, SD카드 /media/sdcard
-# export PHOTOS_DIR=/media/sdcard/DCIM
+# 사진 폴더는 ~/run-photonest.sh가 PHOTOS_DIR로 넘긴다 (~/.photonest-photos-on: sd|internal)
 echo "📷 PhotoNest AI — http://localhost:8765"
 exec .venv/bin/uvicorn backend.main:app --host "\${HOST:-127.0.0.1}" --port 8765
 RUNEOF
@@ -150,25 +151,55 @@ else
 fi
 
 # ---- Termux 쪽 실행 스크립트 생성 ----
-cat > "$HOME/run-photonest.sh" <<EOF
+# 따옴표 친 heredoc으로 그대로 쓰고 설치 경로만 끼워 넣는다 (이스케이프 지옥 방지).
+# '--bind <저장소>:/opt/photonest'는 실제 경로로 남긴다 — restart.sh가 이 줄을 읽어
+# 지금 폴더와 같은지 확인한다.
+cat > "$HOME/run-photonest.sh" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 # PhotoNest 서버 시작 — tmux 세션 'photonest'에서 실행
 #   화면 보기: tmux attach -t photonest   (빠져나오기: Ctrl+b 후 d)
 #   중지:      tmux kill-session -t photonest
-# 사진 위치를 바꾸려면 PHOTOS_DIR을 수정하세요 (proot 안 경로 기준):
-#   내부 공유저장소 = /media/shared , SD카드 = /media/sdcard
+#
+# 사진 원본 위치 — ~/.photonest-photos-on 파일 내용으로 정한다:
+#   sd       → SD 카드의 PhotoNest 폴더. 카드를 빼서 PC 탐색기로 바로 열고 복사할 수 있다.
+#   internal → 저장소 안 photos 폴더 (파일이 없으면 이것)
+# 한 번만 다른 곳을 쓰려면: PHOTOS_DIR=<proot 안 경로> bash ~/run-photonest.sh
+#   (proot 안 경로: 내부 공유저장소 = /media/shared , SD카드 = /media/sdcard)
 termux-wake-lock 2>/dev/null || true   # 화면 꺼져도 서버 유지
 if tmux has-session -t photonest 2>/dev/null; then
   echo "이미 실행 중입니다 — tmux attach -t photonest"
   exit 0
 fi
-tmux new-session -d -s photonest \\
-  "proot-distro login $DISTRO $BINDS -- bash -c 'cd /opt/photonest && HOST=0.0.0.0 PHOTOS_DIR=\\\${PHOTOS_DIR:-/opt/photonest/photos} ./run.sh'"
+
+# SD 카드는 포맷할 때마다 이름(XXXX-XXXX)이 바뀌어서, 시작할 때마다 실제 마운트를 찾는다.
+SD=$(grep -oE ' /storage/[0-9A-F]{4}-[0-9A-F]{4} ' /proc/mounts | head -1 | tr -d ' ')
+BINDS="--bind __PROJ__:/opt/photonest --bind $HOME/storage/shared:/media/shared"
+[ -n "$SD" ] && BINDS="$BINDS --bind $SD:/media/sdcard"
+
+PHOTOS_ON=$(cat "$HOME/.photonest-photos-on" 2>/dev/null || echo internal)
+if [ -n "$PHOTOS_DIR" ]; then
+  PD="$PHOTOS_DIR"
+elif [ "$PHOTOS_ON" = sd ]; then
+  if [ -z "$SD" ]; then
+    # 카드 없이 켜면 빈 폴더를 보게 된다. 서버도 막지만, 애초에 켜지 않는다.
+    echo "❌ SD 카드를 찾지 못했습니다. 사진 원본이 SD 카드에 있어서 서버를 시작하지 않습니다."
+    echo "   카드를 꽂은 뒤 다시 실행하세요:  bash ~/run-photonest.sh"
+    exit 1
+  fi
+  PD=/media/sdcard/PhotoNest
+else
+  PD=/opt/photonest/photos
+fi
+
+tmux new-session -d -s photonest \
+  "proot-distro login __DISTRO__ $BINDS -- bash -c 'cd /opt/photonest && HOST=0.0.0.0 PHOTOS_DIR=$PD ./run.sh'"
 echo "✅ PhotoNest 시작됨 (tmux 세션 photonest)"
+echo "   사진 원본:       $PD${SD:+   (SD 카드: $SD)}"
 echo "   이 태블릿에서:   http://localhost:8765"
 echo "   같은 와이파이:   http://<태블릿IP>:8765  (설정→와이파이→현재 네트워크에서 IP 확인)"
 echo "   ※ LAN에 공개됩니다 — 신뢰하는 홈 네트워크에서만 사용하세요"
 EOF
+sed -i "s#__PROJ__#$PROJ#g; s#__DISTRO__#$DISTRO#g" "$HOME/run-photonest.sh"
 chmod +x "$HOME/run-photonest.sh"
 
 echo

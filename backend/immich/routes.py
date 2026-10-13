@@ -529,7 +529,7 @@ async def asset_upload(
 
     dest_dir = upload._upload_root() / UPLOAD_SUBDIR
     dest_dir.mkdir(parents=True, exist_ok=True)
-    tmp = dest_dir / (".uploading-%s" % name)
+    tmp = dest_dir / (".uploading-%s" % upload.portable_name(name))
     try:
         sha1 = hashlib.sha1()
         with open(tmp, "wb") as out:  # 스트리밍 — 대용량 동영상 대응

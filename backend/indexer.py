@@ -43,6 +43,11 @@ DATA_DIR = db.DATA_DIR
 THUMBS_DIR = DATA_DIR / "thumbs"
 TRASH_DIR = DATA_DIR / "trash"
 
+# 사진 폴더가 SD 카드처럼 빠질 수 있는 곳에 있으면, 카드가 없을 때 빈 폴더를
+# '사진이 전부 지워졌다'로 읽어 DB(앨범·즐겨찾기·인물)를 비우게 된다. 폴더에
+# 이 표식이 있어야 실제 라이브러리가 연결된 것으로 본다.
+LIBRARY_MARKER = ".photonest-library"
+
 AI_ENABLED = os.environ.get("AI_SEARCH", "1") not in ("0", "false", "off")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
@@ -62,6 +67,38 @@ _state = {
 }
 _index_lock = threading.Lock()
 _embed_lock = threading.Lock()
+
+
+def library_online():
+    """사진 폴더(PHOTOS_DIR)가 실제로 연결돼 있는지.
+
+    표식이 있으면 연결됨. 표식이 없을 때는 새 라이브러리(DB에 사진 없음)이거나
+    표식 도입 전부터 쓰던 폴더(파일이 있음)면 표식을 만들고 연결됨으로 본다.
+    DB에는 사진이 있는데 폴더가 없거나 비어 있으면 — SD 카드가 빠진 것 — 끊김.
+    """
+    marker = PHOTOS_DIR / LIBRARY_MARKER
+    if marker.is_file():
+        return True
+    with db.conn() as c:
+        has_media = c.execute(
+            "SELECT 1 FROM media WHERE trashed_at IS NULL LIMIT 1"
+        ).fetchone() is not None
+    has_files = PHOTOS_DIR.is_dir() and any(
+        not p.name.startswith(".") for p in PHOTOS_DIR.iterdir()
+    )
+    if has_media and not has_files:
+        return False
+    try:
+        PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text("PhotoNest 사진 원본 폴더 표식 — 지우지 마세요.\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def library_offline_message():
+    return (f"사진 저장소({PHOTOS_DIR})가 연결되어 있지 않습니다. "
+            "SD 카드가 꽂혀 있는지 확인하고 서버를 다시 시작하세요.")
 
 
 def ai_available():
@@ -521,6 +558,10 @@ def build_index(force=False):
 def _run_pipeline(force):
     if True:
         db.init()
+        if not library_online():
+            # 스캔하면 0장 → remove_missing이 라이브러리 전체를 지운다. 여기서 멈춘다.
+            _state["error"] = library_offline_message()
+            return
         # Takeout zip이 있으면 먼저 자동 추출 (새 파일이 스캔에 포함되도록)
         try:
             from . import takeout

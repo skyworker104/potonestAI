@@ -19,7 +19,7 @@ from typing import List, Optional
 from xml.sax.saxutils import escape
 
 import numpy as np
-from fastapi import APIRouter, Form, Request, Response, UploadFile, File
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import db, indexer
@@ -50,6 +50,9 @@ UPLOAD_DIR_NAME = "MobileBackup"
 
 
 def _upload_root():
+    # SD 카드가 빠진 채로 받으면 proot 안의 빈 폴더(내부 저장소)에 쌓여 버린다
+    if not indexer.library_online():
+        raise HTTPException(status_code=503, detail=indexer.library_offline_message())
     root = indexer.PHOTOS_DIR / UPLOAD_DIR_NAME
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -88,7 +91,8 @@ def _safe_subdir(subdir: str):
     for part in Path(subdir.replace("\\", "/")).parts:
         if part in ("/", "~") or part.startswith("."):
             continue
-        clean = "".join(ch for ch in part if ch not in '<>:"|?*').strip()
+        clean = "".join(ch for ch in part if ch not in '<>:"|?*' and ord(ch) >= 32)
+        clean = clean.strip().rstrip(".")  # 끝의 점은 exFAT·Windows에서 만들 수 없다
         # 특수문자를 걷어낸 뒤 점만 남는 경우가 있다(예: '<..>' → '..').
         # 그대로 두면 상위로 거슬러 올라가 라이브러리 밖에 파일이 생긴다.
         if not clean or set(clean) == {"."}:
@@ -97,8 +101,20 @@ def _safe_subdir(subdir: str):
     return Path(*parts) if parts else None
 
 
+def portable_name(name: str):
+    """SD 카드(exFAT)와 Windows에서도 만들 수 있는 파일 이름.
+
+    사진 원본은 카드를 빼서 PC 탐색기로 볼 수 있어야 한다 — 거기서 금지된
+    문자(<>:"|?* 와 제어문자)는 '_'로, 끝의 점·공백은 뗀다.
+    """
+    name = Path(str(name).replace("\\", "/")).name  # 경로 조작 방지
+    clean = "".join("_" if ch in '<>:"|?*' or ord(ch) < 32 else ch for ch in name)
+    clean = clean.rstrip(" .")
+    return clean or "file"
+
+
 def _unique_path(d: Path, name: str):
-    name = Path(name).name  # 경로 조작 방지
+    name = portable_name(name)
     p = d / name
     stem, suf = p.stem, p.suffix
     i = 1
@@ -173,7 +189,7 @@ async def upload(
         if ext not in indexer.IMAGE_EXTS | indexer.VIDEO_EXTS:
             results.append({"name": name, "status": "unsupported"})
             continue
-        tmp = dest_dir / f".uploading-{name}"
+        tmp = dest_dir / f".uploading-{portable_name(name)}"
         try:
             with open(tmp, "wb") as out:  # 스트리밍 저장 — 대용량 동영상 대응
                 shutil.copyfileobj(f.file, out, length=1024 * 1024)
@@ -215,7 +231,10 @@ async def upload(
 def _dav_path(rest: str) -> Optional[Path]:
     rest = urllib.parse.unquote(rest or "").strip("/")
     root = _upload_root().resolve()
-    p = (root / rest).resolve()
+    # 저장·조회 모두 같은 규칙으로 이름을 바꿔야 앱이 올린 파일을 다시 찾는다
+    parts = [portable_name(x) if x not in (".", "..") else x
+             for x in rest.split("/") if x]
+    p = root.joinpath(*parts).resolve()
     # 문자열 접두사 비교는 이름이 겹치는 형제 폴더를 통과시킨다
     # ('../MobileBackupEvil'이 'MobileBackup'으로 시작) — 경로 단위로 확인한다.
     if not p.is_relative_to(root):

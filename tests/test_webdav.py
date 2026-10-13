@@ -100,7 +100,7 @@ def test_mkcol_outside_is_forbidden(photos, client, rest):
     r = client.request("MKCOL", f"/webdav/{rest}")
 
     assert r.status_code == 403
-    siblings = [p.name for p in photos.iterdir()]
+    siblings = [p.name for p in photos.iterdir() if p.name != indexer.LIBRARY_MARKER]
     assert siblings == [upload.UPLOAD_DIR_NAME]
 
 

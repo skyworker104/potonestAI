@@ -10,6 +10,7 @@ AI 색인은 선택형: AI_SEARCH=0 이거나 임베딩 백엔드 미설치면
 import hashlib
 import json
 import os
+import shutil
 import struct
 import threading
 import time
@@ -694,7 +695,8 @@ def move_to_trash(media_id):
     TRASH_DIR.mkdir(parents=True, exist_ok=True)
     dst = TRASH_DIR / f"{media_id}__{Path(m['path']).name}"
     if src.exists():
-        src.rename(dst)
+        # 사진 원본이 SD 카드에 있으면 휴지통(data/)과 저장장치가 달라 rename이 EXDEV로 실패한다
+        shutil.move(str(src), str(dst))
     db.set_trashed(media_id, str(dst.relative_to(DATA_DIR)))
     return True
 
@@ -707,7 +709,7 @@ def restore_from_trash(media_id):
     dst = PHOTOS_DIR / m["path"]
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.exists():
-        src.rename(dst)
+        shutil.move(str(src), str(dst))
     db.set_restored(media_id)
     return True
 

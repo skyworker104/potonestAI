@@ -241,9 +241,15 @@ $("#sel-fav").onclick = async () => {
 
 $("#sel-trash").onclick = async () => {
   const ids = [...state.selection];
-  for (const id of ids) await api.post(`/api/media/${id}/trash`);
-  speak(`${ids.length}장을 휴지통으로 옮겼어요.`);
-  removeMediaFromView(ids);
+  const done = [];
+  for (const id of ids) {
+    const r = await api.post(`/api/media/${id}/trash`).catch(() => null);
+    if (r?.ok) done.push(id);
+  }
+  const failed = ids.length - done.length;
+  speak(failed ? `${done.length}장을 휴지통으로 옮겼고, ${failed}장은 삭제하지 못했어요.`
+               : `${ids.length}장을 휴지통으로 옮겼어요.`);
+  removeMediaFromView(done);
 };
 
 $("#sel-album").onclick = () => openAlbumModal([...state.selection]);

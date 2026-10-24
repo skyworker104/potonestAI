@@ -192,7 +192,7 @@ function tryUICommand(text) {
 
   // --- 삭제/휴지통 ---
   if (lbIndex >= 0 && /(삭제|지워|휴지통에|버려)/.test(t)) {
-    trashCurrent().then(() => speak("휴지통으로 옮겼어요."));
+    trashCurrent().then((ok) => speak(ok ? "휴지통으로 옮겼어요." : "삭제하지 못했어요. 잠시 후 다시 해 주세요."));
     return true;
   }
   if (/휴지통.*(보여|열어)/.test(t)) { switchView("trash"); speak("휴지통이에요."); return true; }

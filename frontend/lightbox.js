@@ -227,7 +227,8 @@ async function toggleFavoriteCurrent() {
 async function trashCurrent() {
   const it = currentLbItem();
   if (!it) return false;
-  await api.post(`/api/media/${it.id}/trash`);
+  const r = await api.post(`/api/media/${it.id}/trash`).catch(() => null);
+  if (!r?.ok) return false;
   state.currentItems.splice(lbIndex, 1);
   if (!state.currentItems.length) { closeLightbox(); refreshView(); }
   else openLightbox(lbIndex % state.currentItems.length);
@@ -243,8 +244,7 @@ $("#lb-info-btn").onclick = () => setLbInfo(!lbInfoVisible);
 $("#lb-trash").onclick = async () => {
   if (!currentLbItem()) return;
   if (!confirm("이 사진을 삭제할까요?\n휴지통으로 옮겨지며, 휴지통에서 복원할 수 있어요.")) return;
-  await trashCurrent();
-  speak("휴지통으로 옮겼어요.");
+  speak((await trashCurrent()) ? "휴지통으로 옮겼어요." : "삭제하지 못했어요. 잠시 후 다시 해 주세요.");
 };
 $("#lb-album").onclick = () => {
   const it = currentLbItem();

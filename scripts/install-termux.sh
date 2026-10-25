@@ -67,7 +67,8 @@ proot-distro login "$DISTRO" $BINDS -- bash -c '
   apt-get install -y -qq \
     python3-full python3-venv python3-pip \
     python3-numpy python3-opencv python3-pil python3-psutil \
-    libgl1 libglib2.0-0 tesseract-ocr tesseract-ocr-kor
+    libgl1 libglib2.0-0 tesseract-ocr tesseract-ocr-kor \
+    ffmpeg  # 아이폰 HEVC 동영상을 브라우저용 H.264로 변환 (backend/playback.py)
   echo "→ Python: $(python3 --version)"
 
   cd /opt/photonest

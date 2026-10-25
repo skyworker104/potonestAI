@@ -21,11 +21,48 @@ function openLightbox(index) {
       ? `<video src="/media/${encodeURIComponent(it.path)}" controls autoplay></video>`
       : `<img src="/media/${encodeURIComponent(it.path)}" alt="">`;
 
+  const token = ++lbVideoToken;
+  if (it.type === "video") watchPlayback(it, media.querySelector("video"), token);
+
   $("#lb-fav").textContent = it.favorite ? "⭐" : "☆";
   $("#lightbox").hidden = false;
   // 기본은 사진만 크게 — 정보 패널은 ℹ️로 열기 (열려 있었다면 내용 갱신)
   if (lbInfoVisible) renderLbInfo();
   else setLbInfo(false);
+}
+
+// 브라우저가 화면을 못 띄우는 동영상(아이폰 HEVC 등)은 서버가 H.264로 변환한다.
+// 아직 변환 전이면 원본을 그대로 틀어 두고(소리·지원 브라우저는 화면도) 안내를 띄운 뒤,
+// 변환이 끝나면 보던 위치에서 변환본으로 바꿔 끼운다.
+let lbVideoToken = 0;
+const PLAYBACK_POLL_MS = 5000;
+
+async function watchPlayback(it, video, token) {
+  let note = null;
+  while (token === lbVideoToken) {
+    const r = await api.post(`/api/media/${it.id}/playback`).catch(() => null);
+    if (token !== lbVideoToken) return;
+    const st = r?.status;
+    if (st !== "queued" && st !== "converting") {
+      if (note) note.remove();
+      if (st === "ready" && note) {
+        const at = video.currentTime;
+        video.src = `/media/${encodeURIComponent(it.path)}?v=${Date.now()}`;
+        video.addEventListener("loadedmetadata", () => { video.currentTime = at; }, { once: true });
+        video.play().catch(() => {});
+      }
+      return;
+    }
+    if (!note) {
+      note = document.createElement("div");
+      note.className = "lb-video-note";
+      video.after(note);
+    }
+    note.textContent = st === "converting"
+      ? "이 브라우저에서 화면이 나오도록 동영상을 변환하고 있어요. 끝나면 자동으로 바뀌어요."
+      : "화면이 안 나오면 잠시 기다려 주세요 — 이 동영상을 다음 차례로 변환해요.";
+    await new Promise((res) => setTimeout(res, PLAYBACK_POLL_MS));
+  }
 }
 
 function setLbInfo(show) {
@@ -201,6 +238,7 @@ function closeLightbox() {
   $("#lightbox").hidden = true;
   if (lbMap) { lbMap.remove(); lbMap = null; }
   $("#lb-media").innerHTML = ""; // 동영상 재생 중지
+  lbVideoToken++; // 변환 대기 중지
   lbIndex = -1;
 }
 
@@ -350,6 +388,7 @@ function ssShowVideo(url, token) {
   ssStopVideo();
   v.onloadeddata = () => {
     if (token !== ssLoadToken) return;
+    if (v.videoWidth === 0) { ssSchedule(500); return; } // 화면을 못 띄우는 형식(변환 전 HEVC 등)은 건너뜀
     [$("#ss-img"), $("#ss-img-b")].forEach((im) => im.classList.remove("show"));
     v.classList.add("show");
     if (!ssPaused) ssPlay(v);

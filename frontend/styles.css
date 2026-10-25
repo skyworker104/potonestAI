@@ -415,8 +415,11 @@ body.chat-hidden #chat-panel { display: none; }
   display: flex; width: min(1280px, 94vw); height: min(820px, 88vh);
   background: var(--panel); border-radius: 14px; overflow: hidden; margin-top: 30px;
 }
-#lb-media { flex: 1.6; display: flex; align-items: center; justify-content: center; background: #000; }
+#lb-media { flex: 1.6; position: relative; display: flex; align-items: center; justify-content: center; background: #000; }
 #lb-media img, #lb-media video { max-width: 100%; max-height: 100%; }
+.lb-video-note { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  max-width: 90%; padding: 8px 14px; border-radius: 8px; background: rgba(0,0,0,.75);
+  color: #fff; font-size: 15px; text-align: center; pointer-events: none; }
 /* 정보 패널은 ℹ️ 버튼으로 토글 — 기본은 사진만 크게 */
 #lb-info { display: none; flex: 1; min-width: 300px; padding: 22px; flex-direction: column; gap: 8px; }
 #lb-body.show-info #lb-info { display: flex; }

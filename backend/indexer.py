@@ -10,6 +10,7 @@ AI 색인은 선택형: AI_SEARCH=0 이거나 임베딩 백엔드 미설치면
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import threading
@@ -189,11 +190,58 @@ def video_creation_time(path: Path):
         return None
 
 
+def _moov_atom(path: Path, limit=16 * 1024 * 1024):
+    """MP4/MOV의 moov 아톰(메타데이터 상자) 바이트. 최상위 아톰 크기를 따라
+    건너뛰므로 moov가 영상 데이터 뒤(아이폰 MOV)에 있어도 앞부분만 읽지 않는다."""
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            pos = 0
+            while pos + 8 <= size:
+                f.seek(pos)
+                hdr = f.read(16)
+                n, kind = struct.unpack(">I4s", hdr[:8])
+                head = 8
+                if n == 1:
+                    n, head = struct.unpack(">Q", hdr[8:16])[0], 16
+                elif n == 0:
+                    n = size - pos
+                if n < head:
+                    return None
+                if kind == b"moov":
+                    if n > limit:
+                        return None
+                    f.seek(pos)
+                    return f.read(n)
+                pos += n
+    except (OSError, struct.error):
+        pass
+    return None
+
+
+# ISO 6709 좌표 문자열 "+37.6438+126.9198+037.830/" — 위도 2자리·경도 3자리 정수부.
+# 아이폰은 com.apple.quicktime.location.ISO6709 키, 안드로이드는 udta/©xyz에 같은 형식으로 쓴다.
+_ISO6709 = re.compile(rb"([+-]\d{2}\.\d+)([+-]\d{3}\.\d+)")
+
+
+def video_location(path: Path):
+    """동영상 컨테이너에 기록된 촬영 위치 (lat, lon). 없으면 (None, None)."""
+    moov = _moov_atom(path)
+    m = _ISO6709.search(moov) if moov else None
+    if not m:
+        return None, None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+        return None, None
+    return lat, lon
+
+
 def extract_exif(path: Path):
     taken_at, lat, lon = None, None, None
     suffix = path.suffix.lower()
     if suffix in VIDEO_EXTS:
         taken_at = video_creation_time(path)
+        lat, lon = video_location(path)
     exif_src = None
     if piexif and suffix in {".jpg", ".jpeg"}:
         exif_src = str(path)
@@ -348,12 +396,30 @@ def content_hash(path: Path):
 
 # ---------- 썸네일 ----------
 
-def _video_frame(path: Path):
+def _fourcc(cap):
+    v = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+    return "".join(chr((v >> 8 * i) & 0xFF) for i in range(4)).strip().lower() or "?"
+
+
+def video_codec(path: Path):
+    """동영상 코덱 이름 ("h264", "hevc" …). 읽지 못하면 "?"."""
     if cv2 is None:
-        return None, 0.0
+        return "?"
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return _fourcc(cap) if cap.isOpened() else "?"
+    finally:
+        cap.release()
+
+
+def _video_frame(path: Path):
+    """가운데 프레임, 길이(초), 코덱."""
+    if cv2 is None:
+        return None, 0.0, "?"
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
-        return None, 0.0
+        return None, 0.0, "?"
+    codec = _fourcc(cap)
     frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
     duration = frames / fps if fps else 0.0
@@ -361,9 +427,9 @@ def _video_frame(path: Path):
     ok, frame = cap.read()
     cap.release()
     if not ok:
-        return None, duration
+        return None, duration, codec
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(frame), duration
+    return Image.fromarray(frame), duration, codec
 
 
 def _make_thumb(img: Image.Image, item_id: str):
@@ -395,20 +461,25 @@ def file_added_at(p: Path):
         return None
 
 
+def media_id_for(rel: str):
+    """라이브러리 상대 경로 → 미디어 id.
+    확장자까지 id에 포함 (라이브포토처럼 같은 이름의 JPG+MP4 충돌 방지)."""
+    return rel.replace("/", "__").replace("\\", "__").replace(".", "_")
+
+
 def _index_file(p: Path, existing):
     rel = str(p.relative_to(PHOTOS_DIR))
     sig = f"{p.stat().st_size}-{int(p.stat().st_mtime)}"
     if rel in existing and existing[rel]["sig"] == sig:
         return None  # 변경 없음
 
-    # 확장자까지 id에 포함 (라이브포토처럼 같은 이름의 JPG+MP4 충돌 방지)
-    item_id = rel.replace("/", "__").replace("\\", "__").replace(".", "_")
+    item_id = media_id_for(rel)
     is_video = p.suffix.lower() in VIDEO_EXTS
     taken_at, lat, lon = extract_exif(p)
-    duration = 0.0
+    duration, codec = 0.0, None
 
     if is_video:
-        img, duration = _video_frame(p)
+        img, duration, codec = _video_frame(p)
         if img is None:
             return None
     else:
@@ -423,7 +494,7 @@ def _index_file(p: Path, existing):
         "taken_at": taken_at, "lat": lat, "lon": lon,
         "width": w, "height": h, "duration": round(duration, 1),
         "sig": sig, "hash": content_hash(p),
-        "added_at": file_added_at(p),
+        "added_at": file_added_at(p), "video_codec": codec,
     }
     db.upsert_media(meta)
 
@@ -602,6 +673,22 @@ def _run_pipeline(force):
         except Exception:
             pass
 
+        # 코덱·위치를 기록하기 전에 색인된 동영상 — 한 번 읽어 채운다
+        # (예전엔 동영상 위치를 읽지 않아 아이폰·갤럭시 영상의 GPS가 모두 비어 있었다)
+        try:
+            pending = db.videos_missing_codec()
+            if pending:
+                _state["phase"] = "동영상 정보"
+                _state["total"] = len(pending)
+                _state["done"] = 0
+                for mid, rel, has_loc in pending:
+                    p = PHOTOS_DIR / rel
+                    lat, lon = (None, None) if has_loc else video_location(p)
+                    db.set_video_info(mid, video_codec(p), lat, lon)
+                    _state["done"] += 1
+        except Exception:
+            pass
+
         # GPS → 지명 매핑 (역지오코딩) — "협재 사진" 같은 지명 검색용.
         # 최초 1회 GeoNames 다운로드(~12MB), 이후 순수 계산이라 빠름.
         try:
@@ -623,6 +710,10 @@ def _run_pipeline(force):
             # 임베딩은 별도 스레드에서 메모리 인식 스로틀로 천천히 —
             # 얼굴/OCR 색인이 오래 걸리는 임베딩 뒤에 갇히지 않도록 한다.
             start_embed_backfill()
+
+        # 브라우저가 못 띄우는 동영상(아이폰 HEVC 등)은 백그라운드에서 H.264로 변환
+        from . import playback
+        playback.start()
 
         if faces.available():
             _state["phase"] = "얼굴 분석"
@@ -725,6 +816,8 @@ def delete_permanently(media_id):
     thumb = THUMBS_DIR / f"{media_id}.jpg"
     if thumb.exists():
         thumb.unlink()
+    from . import playback
+    playback.drop(media_id)
     # 업로드 중복 캐시에서 해시 제거 — 같은 파일을 다시 올릴 수 있도록
     with db.conn() as c:
         row = c.execute("SELECT hash FROM media WHERE id=?", (media_id,)).fetchone()

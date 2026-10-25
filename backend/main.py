@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import appdist, db, immich, indexer, llm, query_frame, remote, search, storage, upload
+from . import (appdist, db, immich, indexer, llm, playback, query_frame, remote, search,
+               storage, upload)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -1120,6 +1121,12 @@ def trash_list():
     return {"items": db.list_trash()}
 
 
+@app.post("/api/media/{media_id}/playback")
+def media_playback(media_id: str):
+    """화면이 안 나오는 동영상 — 변환 상태를 알려 주고, 아직이면 다음 차례로 당긴다."""
+    return {"status": playback.request(media_id)}
+
+
 @app.post("/api/media/{media_id}/trash")
 def trash_media(media_id: str):
     return {"ok": indexer.move_to_trash(media_id)}
@@ -1247,6 +1254,11 @@ def media(rel_path: str):
             return FileResponse(cached, media_type="image/jpeg")
         except Exception:
             return FileResponse(p)  # 변환 실패 시 원본
+    # 브라우저가 못 띄우는 동영상(아이폰 HEVC 등)은 H.264 변환본이 있으면 그걸 준다
+    if p.suffix.lower() in indexer.VIDEO_EXTS:
+        conv = playback.ready_file(indexer.media_id_for(rel_path), p)
+        if conv:
+            return FileResponse(conv, media_type="video/mp4")
     return FileResponse(p)
 
 

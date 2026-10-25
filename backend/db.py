@@ -94,6 +94,9 @@ MIGRATIONS = [
     # 촬영 시각(taken_at)과 다르다. 기존 행은 색인이 파일 ctime으로 채운다.
     "ALTER TABLE media ADD COLUMN added_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_media_added ON media(added_at DESC)",
+    # 동영상 코덱 ("h264", "hevc" …, 못 읽으면 "?") — 브라우저가 못 띄우는 코덱은
+    # playback.py가 H.264로 변환해 둔다. NULL = 아직 안 읽음(색인이 채운다).
+    "ALTER TABLE media ADD COLUMN video_codec TEXT",
 ]
 
 
@@ -140,15 +143,16 @@ def upsert_media(meta, embedding=None):
     with conn() as c:
         c.execute(
             """INSERT INTO media (id, path, type, taken_at, lat, lon, width, height,
-                                  duration, sig, hash, embedding, added_at)
+                                  duration, sig, hash, embedding, added_at, video_codec)
                VALUES (:id, :path, :type, :taken_at, :lat, :lon, :width, :height,
-                       :duration, :sig, :hash, :embedding, :added_at)
+                       :duration, :sig, :hash, :embedding, :added_at, :video_codec)
                ON CONFLICT(id) DO UPDATE SET
                  path=:path, taken_at=:taken_at, lat=:lat, lon=:lon,
                  width=:width, height=:height, duration=:duration, sig=:sig,
-                 hash=:hash,
+                 hash=:hash, video_codec=:video_codec,
                  embedding=COALESCE(:embedding, embedding)""",
-            dict(meta, embedding=emb, added_at=added),
+            dict(meta, embedding=emb, added_at=added,
+                 video_codec=meta.get("video_codec")),
         )
 
 
@@ -552,6 +556,39 @@ def media_missing_place():
             "AND lat IS NOT NULL AND lon IS NOT NULL AND place_name IS NULL"
         ).fetchall()
     return [(r["id"], r["lat"], r["lon"]) for r in rows]
+
+
+def videos_missing_codec():
+    """코덱을 아직 안 읽은 활성 동영상 (id, path, 위치 있음 여부)."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT id, path, lat IS NOT NULL AS has_loc FROM media "
+            "WHERE type='video' AND trashed_at IS NULL AND video_codec IS NULL"
+        ).fetchall()
+    return [(r["id"], r["path"], bool(r["has_loc"])) for r in rows]
+
+
+def set_video_info(media_id, codec, lat=None, lon=None):
+    """동영상 코덱 기록 + (위치가 비어 있을 때만) 파일에서 읽은 위치를 채운다."""
+    with conn() as c:
+        c.execute("UPDATE media SET video_codec=? WHERE id=?", (codec, media_id))
+        if lat is not None and lon is not None:
+            c.execute("UPDATE media SET lat=?, lon=?, place_name=NULL "
+                      "WHERE id=? AND lat IS NULL", (lat, lon, media_id))
+
+
+def videos_to_convert(playable):
+    """브라우저가 바로 못 띄우는 코덱의 활성 동영상 (id, path, duration) — 최근 촬영부터.
+    playable: 그대로 재생되는 코덱. 코덱을 못 읽은 영상("?")·안 읽은 영상(NULL)은 제외."""
+    keep = list(playable) + ["?"]
+    q = ",".join("?" * len(keep))
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT id, path, duration FROM media WHERE type='video' "
+            f"AND trashed_at IS NULL AND video_codec NOT IN ({q}) "
+            "ORDER BY taken_at DESC", keep
+        ).fetchall()
+    return [(r["id"], r["path"], r["duration"]) for r in rows]
 
 
 def clear_place_names():

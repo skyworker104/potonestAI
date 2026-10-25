@@ -165,7 +165,8 @@ def _is_hdr(src):
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False
-    return out in _HDR_TRANSFERS
+    # 부가 데이터(돌비비전 등)가 있으면 "arib-std-b67," 처럼 뒤에 쉼표가 붙는다
+    return out.split(",")[0].strip() in _HDR_TRANSFERS
 
 
 def _convert(media_id, src, duration):

@@ -7,6 +7,7 @@ H.264 변환본을 만들어 두고 /media/에서 대신 준다. 또 동영상 �
 """
 import os
 import struct
+import subprocess
 import time
 
 import pytest
@@ -161,3 +162,15 @@ def test_delete_and_orphan_cleanup(lib):
     assert cache.exists() and not orphan.exists() and not part.exists()
     playback.drop(mid)
     assert not cache.exists()
+
+
+@pytest.mark.parametrize("probe, hdr", [
+    ("arib-std-b67,\n", True),   # 아이폰 HLG + 돌비비전 부가 데이터 — 실제 ffprobe 출력
+    ("smpte2084\n", True),
+    ("bt709\n", False),
+    ("", False),
+])
+def test_hdr_detection(monkeypatch, tmp_path, probe, hdr):
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=probe))
+    assert playback._is_hdr(tmp_path / "x.MOV") is hdr

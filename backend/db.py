@@ -244,7 +244,9 @@ def get_media(media_id):
 
 def list_photos(month=None, album_id=None, favorites=False, trashed=False,
                 ids=None, limit=2000, offset=0):
-    q = f"SELECT {MEDIA_COLS} FROM media"
+    # 앨범 조인 때 album_items에도 added_at이 있어 열 이름이 겹친다 — media.로 한정
+    cols = ", ".join("media." + c.strip() for c in MEDIA_COLS.split(","))
+    q = f"SELECT {cols} FROM media"
     where, args = [], []
     if trashed:
         where.append("trashed_at IS NOT NULL")
@@ -265,7 +267,7 @@ def list_photos(month=None, album_id=None, favorites=False, trashed=False,
         where.append(f"media.id IN ({','.join('?' * len(ids))})")
         args.extend(ids)
     q += " WHERE " + " AND ".join(where)
-    q += " ORDER BY taken_at DESC LIMIT ? OFFSET ?"
+    q += " ORDER BY media.taken_at DESC LIMIT ? OFFSET ?"
     args.extend([limit, offset])
     with conn() as c:
         return [row_to_item(r) for r in c.execute(q, args).fetchall()]

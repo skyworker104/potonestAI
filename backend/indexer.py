@@ -732,6 +732,16 @@ def _run_pipeline(force):
         from . import playback
         playback.start()
 
+        # 정리 추천은 처음 한 번 파일(EXIF)·썸네일(선명도)을 읽느라 태블릿에서 30초쯤
+        # 걸린다 — 사용자가 '중복' 화면을 열기 전에 미리 읽어 둔다
+        def _warm_cleanup():
+            try:
+                from . import cleanup
+                cleanup.suggestions()
+            except Exception:
+                pass
+        threading.Thread(target=_warm_cleanup, daemon=True).start()
+
         if faces.available():
             _state["phase"] = "얼굴 분석"
             pending = db.unscanned_media_ids()

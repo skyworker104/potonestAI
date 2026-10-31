@@ -358,6 +358,17 @@ def duplicate_groups():
     return list(groups.values())
 
 
+def cleanup_rows():
+    """정리 추천용 활성 미디어 — 해시·OCR 글자 수·앨범 포함 여부까지 (최근 촬영부터)."""
+    with conn() as c:
+        return c.execute(
+            f"""SELECT {MEDIA_COLS}, hash, length(trim(coalesce(ocr_text, ''))) AS ocr_len,
+                       EXISTS(SELECT 1 FROM album_items ai WHERE ai.media_id = media.id)
+                         AS in_album
+                FROM media WHERE trashed_at IS NULL ORDER BY taken_at DESC"""
+        ).fetchall()
+
+
 # ---------- 임베딩 (검색용 행렬) ----------
 
 def load_embeddings(model=None, dim=768):

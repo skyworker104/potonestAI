@@ -68,7 +68,7 @@ async function pollStatus() {
 /* ---------------- 뷰 라우터 ---------------- */
 const VIEW_TITLES = {
   photos: "사진", map: "지도", albums: "앨범", favorites: "즐겨찾기",
-  trash: "휴지통", duplicates: "중복 정리", search: "검색 결과", albumDetail: "앨범",
+  trash: "휴지통", duplicates: "중복 · 정리 추천", search: "검색 결과", albumDetail: "앨범",
   people: "인물", personDetail: "인물", phone: "폰 연결", storage: "저장소·백업",
 };
 
@@ -304,6 +304,8 @@ $("#sel-delete").onclick = async () => {
 /* 선택 항목을 재렌더 없이 화면에서만 제거 — 스크롤 위치가 유지된다.
    (기존에는 switchView로 전체를 다시 그려 스크롤이 맨 위로 튀었음) */
 function removeMediaFromView(ids) {
+  // 정리 추천은 묶음(남길 사진·개수)이 바뀌므로 다시 계산해 그린다
+  if (state.view === "duplicates") { clearSelection(); return refreshView(); }
   const idSet = new Set(ids);
   $$("#content .tile").forEach((t) => { if (idSet.has(t.dataset.id)) t.remove(); });
 
@@ -365,8 +367,10 @@ function refreshView() {
 /* ---------------- 앨범 모달 ---------------- */
 let albumModalIds = [];
 
-async function openAlbumModal(mediaIds) {
+async function openAlbumModal(mediaIds, suggestedName = "") {
   albumModalIds = mediaIds;
+  $("#album-modal h3").textContent = `앨범에 추가 (${mediaIds.length}장)`;
+  $("#album-modal-name").value = suggestedName; // 지도 지역처럼 이름을 짐작할 수 있으면 미리 채운다
   const { albums } = await api.get("/api/albums");
   const list = $("#album-modal-list");
   list.innerHTML = "";

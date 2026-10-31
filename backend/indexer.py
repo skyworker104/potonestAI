@@ -378,6 +378,23 @@ def extract_details(path: Path):
     return info
 
 
+def has_camera_exif(path: Path):
+    """카메라 제조사·모델이 EXIF에 있는가 — 화면 캡처·저장한 이미지에는 없다."""
+    if not piexif:
+        return False
+    try:
+        if path.suffix.lower() in {".jpg", ".jpeg"}:
+            src = str(path)
+        else:
+            src = Image.open(path).info.get("exif")  # HEIC·PNG·WebP는 헤더만 읽는다
+        if not src:
+            return False
+        z = piexif.load(src).get("0th", {})
+        return bool(z.get(piexif.ImageIFD.Make) or z.get(piexif.ImageIFD.Model))
+    except Exception:
+        return False
+
+
 def _human_size(n):
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":

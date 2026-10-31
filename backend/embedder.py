@@ -23,15 +23,18 @@ _cache = {"checked": False, "name": None}
 #   text_base/span   코멘트·캡션 문장 유사도(0.42~1.0)를 이미지 점수대로 사상
 #   ocr_base/span    OCR 부분일치 비율(0~1)을 이미지 점수대로 사상
 _PARAMS = {
+    # similar_threshold: 30초 안에 연달아 찍은 두 사진을 '비슷한 연속 사진'으로 볼
+    # 이미지 간 코사인 하한 (cleanup.py). 실측: siglip 0.92~0.95는 구도·표정이 다른
+    # 같은 장면이 섞이고, clip 0.90은 인물 위치가 바뀐 사진까지 묶였다.
     "siglip": dict(score_threshold=0.10, score_margin=0.025,
                    text_base=0.06, text_span=0.12,
-                   ocr_base=0.10, ocr_span=0.06),
+                   ocr_base=0.10, ocr_span=0.06, similar_threshold=0.95),
     # 실측(양자화 ONNX, 실제 사진 300장): 있는 주제 top1 ~0.27-0.29,
     # 없는 주제 ~0.23. 프롬프트 템플릿("a photo of ...")은 효과 없어 미사용.
     # text/ocr 사상은 siglip 대비 이미지 점수대 비례(약 2.2배)로 환산.
     "clip-onnx": dict(score_threshold=0.24, score_margin=0.05,
                       text_base=0.15, text_span=0.22,
-                      ocr_base=0.24, ocr_span=0.08),
+                      ocr_base=0.24, ocr_span=0.08, similar_threshold=0.94),
 }
 
 

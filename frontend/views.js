@@ -115,8 +115,12 @@ function updateMonthCheck(ym) {
 }
 
 /* ---------------- 지도 ---------------- */
+// 묶음(클러스터)을 누르면 그 지역 사진만 옆 패널에 모아 보여 준다 — 상세보기의 앞뒤 이동,
+// 슬라이드쇼, 앨범 추가가 모두 그 지역 사진 안에서만 움직인다.
+let geoItems = [];      // 지도의 전체 사진
 views.map = async () => {
   const { items } = await api.get("/api/geo");
+  geoItems = items;
   $("#view-count").textContent = `위치 정보가 있는 미디어 ${items.length}장`;
   const c = $("#content");
   if (!items.length) {
@@ -134,22 +138,110 @@ views.map = async () => {
   }).addTo(geoMap);
 
   state.currentItems = items;
-  const cluster = L.markerClusterGroup();
+  // 클릭은 확대 대신 지역 패널 — 확대는 핀치·휠·패널의 '지도 확대'로
+  const cluster = L.markerClusterGroup({ zoomToBoundsOnClick: false });
   const bounds = [];
-  items.forEach((it, i) => {
+  items.forEach((it) => {
     const icon = L.divIcon({
       className: "photo-marker",
       html: `<img src="/thumbs/${it.id}.jpg">`,
       iconSize: [52, 52],
     });
     const mk = L.marker([it.lat, it.lon], { icon });
-    mk.on("click", () => openLightbox(i));
+    mk.item = it;
+    mk.on("click", () => {
+      // 한 장짜리 핀 — 지금 화면에 보이는 사진들 사이에서 앞뒤로 넘긴다
+      const visible = geoVisibleItems();
+      closeRegionPanel();
+      state.currentItems = visible;
+      openLightbox(Math.max(0, visible.findIndex((v) => v.id === it.id)));
+    });
     cluster.addLayer(mk);
     bounds.push([it.lat, it.lon]);
   });
+  cluster.on("clusterclick", (e) => {
+    const items = e.layer.getAllChildMarkers().map((m) => m.item);
+    openRegionPanel(byNewest(items), e.layer.getBounds());
+  });
   geoMap.addLayer(cluster);
   geoMap.fitBounds(bounds, { padding: [40, 40] });
+
+  addTopbarBtn("📍 이 화면의 사진", () => {
+    const visible = geoVisibleItems();
+    if (!visible.length) { speak("지금 지도 화면에는 사진이 없어요."); return; }
+    openRegionPanel(visible, null);
+  });
 };
+
+function byNewest(items) {
+  return [...items].sort((a, b) => (b.taken_at || "").localeCompare(a.taken_at || ""));
+}
+
+function geoVisibleItems() {
+  const b = geoMap.getBounds();
+  return byNewest(geoItems.filter((it) => b.contains([it.lat, it.lon])));
+}
+
+// 지명 문자열("상림골 Sangnim-gol 진관동 은평구 서울 …")에서 동네 이름 하나 — 가장 흔한 것
+function regionName(items) {
+  const count = {};
+  items.forEach((it) => {
+    const ko = (it.place_name || "").split(" ").filter((t) => /[가-힣]/.test(t));
+    const name = ko.find((t) => /(동|읍|면|리|가)$/.test(t)) || ko[0];
+    if (name) count[name] = (count[name] || 0) + 1;
+  });
+  const best = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : "";
+}
+
+function regionPeriod(items) {
+  const ym = items.map((it) => (it.taken_at || "").slice(0, 7)).filter(Boolean).sort();
+  if (!ym.length) return "";
+  const fmt = (s) => s.replace("-", ".");
+  return ym[0] === ym[ym.length - 1] ? fmt(ym[0]) : `${fmt(ym[0])}~${fmt(ym[ym.length - 1])}`;
+}
+
+function openRegionPanel(items, bounds) {
+  closeRegionPanel();
+  clearSelection();
+  state.currentItems = items;
+  const place = regionName(items);
+  const period = regionPeriod(items);
+  const panel = document.createElement("aside");
+  panel.id = "region-panel";
+  panel.innerHTML =
+    `<div class="region-head">
+       <div><strong>${place || "이 지역"}</strong><small>${[period, `${items.length}장`].filter(Boolean).join(" · ")}</small></div>
+       <button class="region-close" title="닫기">✕</button>
+     </div>
+     <div class="region-actions">
+       <button data-act="album">📁 앨범에 추가</button>
+       <button data-act="slideshow">▶ 슬라이드쇼</button>
+       ${bounds ? `<button data-act="zoom">🔍 지도 확대</button>` : ""}
+     </div>
+     <div class="region-grid"></div>`;
+  panel.querySelector(".region-close").onclick = closeRegionPanel;
+  panel.querySelector('[data-act="album"]').onclick = () => {
+    // 고른 사진이 있으면 그것만, 없으면 이 지역 전체
+    const ids = state.selection.size ? [...state.selection] : items.map((it) => it.id);
+    openAlbumModal(ids, [place, period].filter(Boolean).join(" "));
+  };
+  panel.querySelector('[data-act="slideshow"]').onclick = () => startSlideshow(0);
+  if (bounds) {
+    panel.querySelector('[data-act="zoom"]').onclick = () =>
+      geoMap.fitBounds(bounds, { padding: [40, 40] });
+  }
+  renderFlatGrid(items, panel.querySelector(".region-grid"));
+  $("#content").appendChild(panel);
+}
+
+function closeRegionPanel() {
+  const p = document.getElementById("region-panel");
+  if (!p) return;
+  p.remove();
+  clearSelection();
+  state.currentItems = geoItems;
+}
 
 /* ---------------- 인물 ---------------- */
 views.people = async () => {
@@ -300,42 +392,103 @@ views.trash = async () => {
   renderFlatGrid(items);
 };
 
-/* ---------------- 중복 정리 ---------------- */
+/* ---------------- 중복 · 정리 추천 ---------------- */
+// 묶음마다 '추천대로 선택'이 지울 만한 사진을 골라 두고, 지우기는 아래 선택 막대의
+// 🗑️ 휴지통으로 한다(휴지통에서 복원 가능). 묶음 사진은 맨 앞 한 장을 남길 것으로 추천.
+const CLEANUP_SECTIONS = [
+  { key: "duplicates", title: "똑같은 사진", grouped: true,
+    desc: "같은 파일이 여러 번 들어온 사진이에요. 한 장만 남기면 돼요." },
+  { key: "similar", title: "비슷한 연속 사진", grouped: true,
+    desc: "몇 초 사이에 거의 같게 여러 장 찍은 사진이에요. 즐겨찾기·앨범 사진이나 가장 선명한 사진을 남기도록 추천해요." },
+  { key: "screenshots", title: "스크린샷",
+    desc: "휴대폰·태블릿 화면을 캡처한 이미지예요. 필요한 것만 골라 남기세요." },
+  { key: "documents", title: "문서·화면을 찍은 사진",
+    desc: "영수증·문서·화이트보드·모니터 화면처럼 기록용으로 찍은 사진이에요." },
+];
+const CLEANUP_PAGE = 60; // 한 번에 그리는 타일 수 — 수백 장이어도 화면이 버벅이지 않게
+
 views.duplicates = async () => {
-  const { groups } = await api.get("/api/duplicates");
-  $("#view-count").textContent = groups.length ? `${groups.length}그룹` : "";
   const c = $("#content");
-  if (!groups.length) {
-    c.innerHTML = `<div class="empty">중복된 사진이 없습니다 🎉</div>`;
+  c.innerHTML = `<div class="empty">지울 만한 사진을 찾고 있어요…</div>`;
+  const data = await api.get("/api/cleanup");
+  if (state.view !== "duplicates") return; // 그 사이 다른 화면으로 이동
+  c.innerHTML = "";
+
+  // 라이트박스 인덱스는 화면 전체에서 하나로 센다
+  const flat = [];
+  const sections = CLEANUP_SECTIONS.map((sec) => {
+    const groups = sec.grouped ? data[sec.key] || [] : [data[sec.key] || []];
+    const tiles = [];      // {it, index, keep}
+    const picks = [];      // '추천대로 선택'할 id
+    groups.forEach((g) => g.forEach((it, i) => {
+      const keep = sec.grouped && i === 0;
+      tiles.push({ it, index: flat.length, keep });
+      flat.push(it);
+      if (!keep) picks.push(it.id);
+    }));
+    return { ...sec, groups, tiles, picks };
+  });
+  state.currentItems = flat;
+
+  const total = sections.reduce((n, s) => n + s.picks.length, 0);
+  $("#view-count").textContent = total ? `정리 추천 ${total}장` : "";
+  if (!total) {
+    c.innerHTML = `<div class="empty">정리할 사진이 없어요 🎉</div>`;
     return;
   }
-  addTopbarBtn("🧹 중복 모두 지우기", cleanAllDuplicates);
-  state.currentItems = groups.flat();
-  let idx = 0;
-  groups.forEach((g, gi) => {
-    const sec = document.createElement("div");
-    sec.className = "dup-group";
-    const head = document.createElement("div");
-    head.className = "dup-head";
-    head.innerHTML = `<h4>그룹 ${gi + 1} · ${g.length}장 동일</h4>`;
-    const btn = document.createElement("button");
-    btn.textContent = "첫 장만 남기고 휴지통으로";
-    btn.onclick = async () => {
-      for (const it of g.slice(1)) await api.post(`/api/media/${it.id}/trash`);
-      speak(`${g.length - 1}장을 휴지통으로 옮겼어요.`);
-      switchView("duplicates");
+  if (sections[0].picks.length) addTopbarBtn("🧹 똑같은 사진 모두 지우기", cleanAllDuplicates);
+  if (!data.ai) {
+    c.insertAdjacentHTML("beforeend",
+      `<p class="cleanup-note">AI 검색이 꺼져 있어 '비슷한 사진·스크린샷·문서' 판정은 파일 이름으로만 했어요.</p>`);
+  }
+
+  sections.forEach((sec) => {
+    if (!sec.picks.length) return;
+    const box = document.createElement("section");
+    box.className = "dup-group";
+    const unit = sec.grouped ? `${sec.groups.length}묶음 · ` : "";
+    box.innerHTML =
+      `<div class="dup-head"><h4>${sec.title} <small>${unit}지울 만한 사진 ${sec.picks.length}장</small></h4></div>` +
+      `<p class="cleanup-desc">${sec.desc}</p>`;
+    const pick = document.createElement("button");
+    pick.textContent = `추천대로 선택 (${sec.picks.length}장)`;
+    pick.onclick = () => {
+      sec.picks.forEach((id) => state.selection.add(id));
+      $$("#content .tile").forEach((t) => {
+        if (state.selection.has(t.dataset.id)) t.classList.add("selected");
+      });
+      updateSelectionBar();
+      speak(`${sec.title} ${sec.picks.length}장을 골랐어요. 확인한 뒤 아래 휴지통 버튼을 누르세요.`);
     };
-    head.appendChild(btn);
-    sec.appendChild(head);
+    box.querySelector(".dup-head").appendChild(pick);
+
     const grid = document.createElement("div");
     grid.className = "group-grid";
-    g.forEach((it) => {
-      const myIdx = idx++;
-      const t = makeTile(it, myIdx);
-      grid.appendChild(t);
-    });
-    sec.appendChild(grid);
-    c.appendChild(sec);
+    box.appendChild(grid);
+    let shown = 0;
+    const more = document.createElement("button");
+    more.className = "cleanup-more";
+    const drawMore = () => {
+      sec.tiles.slice(shown, shown + CLEANUP_PAGE).forEach(({ it, index, keep }, k) => {
+        // 묶음이 바뀌는 자리에 구분선 — 어느 사진끼리 비슷한지 보이게
+        if (sec.grouped && keep && shown + k > 0) {
+          const br = document.createElement("div");
+          br.className = "cleanup-break";
+          grid.appendChild(br);
+        }
+        const t = makeTile(it, index);
+        if (keep) t.insertAdjacentHTML("beforeend", `<span class="keep-badge">남김 추천</span>`);
+        if (state.selection.has(it.id)) t.classList.add("selected");
+        grid.appendChild(t);
+      });
+      shown = Math.min(shown + CLEANUP_PAGE, sec.tiles.length);
+      more.hidden = shown >= sec.tiles.length;
+      more.textContent = `더 보기 (${sec.tiles.length - shown}장 남음)`;
+    };
+    more.onclick = drawMore;
+    drawMore();
+    box.appendChild(more);
+    c.appendChild(box);
   });
 };
 

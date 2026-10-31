@@ -11,8 +11,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (appdist, db, immich, indexer, llm, playback, query_frame, remote, search,
-               storage, upload)
+from . import (appdist, cleanup, db, immich, indexer, llm, playback, query_frame, remote,
+               search, storage, upload)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -344,6 +344,12 @@ def media_details(media_id: str):
 @app.get("/api/duplicates")
 def duplicates():
     return {"groups": db.duplicate_groups()}
+
+
+@app.get("/api/cleanup")
+def cleanup_suggestions():
+    """정리 추천 — 똑같은 사진·비슷한 연속 사진·스크린샷·문서 사진 (cleanup.py)."""
+    return cleanup.suggestions()
 
 
 @app.post("/api/duplicates/clean")

@@ -141,7 +141,7 @@ def _date(text, now):
         df, dt = _relative_day(m.group(1), now)
         if df:
             return df, dt, _take(text, m), m.group(0)
-    df, dt, span = llm._parse_date_phrase(text)
+    df, dt, span = llm._parse_date_phrase(text, now)
     if span:
         return df, dt, text.replace(span, " ", 1), span
     return None, None, text, None

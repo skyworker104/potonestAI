@@ -96,13 +96,13 @@ def _parse_time_phrase(msg):
     return hf, ht, m.group(0)
 
 
-def _parse_date_phrase(msg):
+def _parse_date_phrase(msg, now=None):
     """발화에서 상대/절대 날짜 표현을 찾아 (date_from, date_to, 매칭문자열) 반환.
 
     "3년 전", "재작년", "작년 여름", "2019년", "지난달" 등 처리.
-    매칭문자열은 검색 키워드에서 제거하는 데 쓴다.
+    매칭문자열은 검색 키워드에서 제거하는 데 쓴다. now: 기준 시각(기본은 지금).
     """
-    now = datetime.now()
+    now = now or datetime.now()
 
     # "2018년 4월" — 연+월 조합 (연도 단독 패턴보다 먼저 검사해야 함)
     m = re.search(r"((?:19|20)\d{2})\s*년\s*(\d{1,2})\s*월", msg)
@@ -307,6 +307,57 @@ def detect_refine(message):
         return None
     remainder = (message[:m.start()] + " " + message[m.end():])
     return re.sub(r"\s+", " ", remainder).strip()
+
+
+# 찾은 사진으로 앨범 만들기 — "이 사진들을 앨범으로 만들어줘", "찾은 거 전부 가족 앨범에 넣어줘".
+_ALBUM_VERB = re.compile(
+    r"앨범\s*(?P<josa>을|를|으로|로|에다가?|에)?\s*(?:하나\s*|새로\s*|따로\s*)?"
+    r"(?P<verb>만들|생성|묶|넣|추가|저장|담|모아)")
+# 직전 결과를 가리키는 말 — 이게 있거나 '앨범으로/앨범에'처럼 말해야 결과로 만드는 요청이다.
+# ("가족 앨범 만들어줘"는 빈 앨범 만들기 — 화면의 음성 명령이 처리한다)
+_RESULT_REF = re.compile(
+    r"(?<![가-힣])(?:(?:이|그|저|위|요|방금|지금|아까|찾은|찾아\s*준|검색한|검색된|나온|보이는"
+    r"|이런|그런)\s*(?:사진|동영상|영상|것|거|결과|파일)|이것|그것|이거|그거|이걸|그걸|결과"
+    r"|전부|모두|다들)")
+# 앨범 이름에서 뺄 말 — 결과를 가리키는 말과 그 조사, '새 앨범'의 '새' 등
+_ALBUM_NAME_NOISE = re.compile(
+    r"(?<![가-힣])(?:(?:(?:이|그|저|위|요|방금|지금|아까|찾은|찾아\s*준|검색한|검색된|나온|보이는"
+    r"|이런|그런)\s*)*(?:사진|동영상|영상|것|거|결과|파일|이것|그것|이거|그거|이걸|그걸)(?:들)?"
+    r"|전부|모두|다들|싹|새로운|새로|새|하나|따로|좀)"
+    r"(?:을|를|으로|로|만|은|는|이|가|에서|도)?(?![가-힣])")
+_SEARCH_THEN = re.compile(r"\s*(?:찾아서|찾아|검색해서|골라서|모아서)\s*(?:그걸로|그거로|이걸로)?\s*$")
+
+
+def detect_album_request(message):
+    """찾은 사진으로 앨범을 만들거나 넣어 달라는 말이면 dict, 아니면 None.
+
+    {"name": 말한 앨범 이름 또는 None, "add": '넣어/추가/담아'(기존 앨범에)인가,
+     "search": "제주도 바다 사진 찾아서 앨범으로…"처럼 같이 말한 검색어 또는 None}
+    """
+    m = _ALBUM_VERB.search(message)
+    if not m:
+        return None
+    pre = message[:m.start()]
+    if not (_RESULT_REF.search(pre) or m.group("josa") in ("으로", "로", "에", "에다", "에다가")):
+        return None
+    search = None
+    s = _SEARCH_THEN.search(pre)
+    if s is None:
+        # "제주도 사진 찾아서 가족 앨범에" — 검색어와 이름 사이
+        s2 = re.search(r"(?:찾아서|검색해서|골라서|모아서)", pre)
+        if s2:
+            search, pre = pre[:s2.start()].strip(), pre[s2.end():]
+    else:
+        search, pre = pre[:s.start()].strip(), ""
+    quoted = re.search(r"['\"“”‘’「『](.+?)['\"“”‘’」』]", message)
+    if quoted:
+        name = quoted.group(1).strip()
+    else:
+        name = re.sub(r"(?:이라는|라는|이란|란)\s*$", "", pre.strip())
+        name = _ALBUM_NAME_NOISE.sub(" ", name)
+        name = re.sub(r"[\s,.!~]+", " ", name).strip()
+    return {"name": name or None, "add": m.group("verb") in ("넣", "추가", "담"),
+            "search": search or None}
 
 
 # 직전 결과를 부정하며 새로 요청 — "아니 지리산에서 찍은 사진 보여 줘".

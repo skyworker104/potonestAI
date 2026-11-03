@@ -70,8 +70,9 @@ def test_iphone_video_time_is_local(lib):
 def test_pairs_with_the_photo_taken_at_the_same_moment(lib):
     d = "MobileBackup/Immich"
     _mov(lib / d / "IMG_0010.MOV", "2026-10-09T18:03:18+0900")
-    vid = add(lib, f"{d}/IMG_0010.MOV", "video", "2026-10-09T09:03:18", 2.9)  # UTC로 잘못 기록
-    photo = add(lib, f"{d}/IMG_0010_1.HEIC", "image", "2026-10-09T18:03:19")
+    # UTC로 잘못 기록 — mvhd는 현지 시각 문자열보다 2초 늦기도 하다(실제 IMG_1580)
+    vid = add(lib, f"{d}/IMG_0010.MOV", "video", "2026-10-09T09:03:20", 2.9)
+    photo = add(lib, f"{d}/IMG_0010_1.HEIC", "image", "2026-10-09T18:03:22")   # 4초 뒤
     old = add(lib, f"{d}/IMG_0010.JPG", "image", "2024-03-23T17:34:53")       # 이름만 같은 옛 사진
     run_check()
     v, p = db.get_media(vid), db.get_media(photo)

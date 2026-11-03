@@ -242,12 +242,18 @@ def remove_missing(present_paths):
     return len(gone)
 
 
+# 확인 규칙을 고치면 올린다 — 예전 규칙으로 확인한 동영상도 한 번 더 본다
+# (2: 시각 오차 허용 2초 → 10초, 짝 사진 3초 → 5초)
+LIVE_CHECK_VERSION = 2
+
+
 def videos_to_live_check():
     """아직 촬영 시각 정정·라이브 포토 짝 찾기를 안 한 동영상 (id, path, taken_at, duration)."""
     with conn() as c:
         return [tuple(r) for r in c.execute(
             "SELECT id, path, taken_at, duration FROM media WHERE type='video' "
-            "AND trashed_at IS NULL AND live_checked = 0 AND path IS NOT NULL").fetchall()]
+            "AND trashed_at IS NULL AND live_checked < ? AND live_of IS NULL "
+            "AND path IS NOT NULL", (LIVE_CHECK_VERSION,)).fetchall()]
 
 
 def live_partner_candidates(folder, stem):
@@ -269,7 +275,7 @@ def set_live_checked(video_id, taken_at=None, photo_id=None, done=True):
             c.execute("UPDATE media SET live_of=? WHERE id=?", (photo_id, video_id))
             c.execute("UPDATE media SET live_video=? WHERE id=?", (video_id, photo_id))
         if done:
-            c.execute("UPDATE media SET live_checked=1 WHERE id=?", (video_id,))
+            c.execute("UPDATE media SET live_checked=? WHERE id=?", (LIVE_CHECK_VERSION, video_id))
 
 
 def taken_range(media_ids):

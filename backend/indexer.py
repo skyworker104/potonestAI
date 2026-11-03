@@ -255,7 +255,7 @@ def is_live_video(path: Path):
 
 
 LIVE_MAX_SECONDS = 5
-LIVE_MAX_GAP = 3           # 사진과 동영상 촬영 시각 차이(초) — 실제로는 1초 안팎
+LIVE_MAX_GAP = 5           # 사진과 동영상 촬영 시각 차이(초) — 대개 1초 안팎, 4초인 것도 있다
 
 
 def _seconds_between(a, b):
@@ -271,14 +271,15 @@ def check_video(mid, rel, taken, duration):
     촬영 시각: 다시 읽은 값이 기존 값과 정확히 몇 시간 차이 나면 시간대 오류로 보고 고친다
     (사용자가 고친 시각이나 다른 근거로 정한 시각은 건드리지 않는다).
     짝 사진: 라이브 동영상이면 같은 폴더, 같은 이름(업로드 때 붙은 _1 꼴 허용)의 사진 중
-    촬영 시각이 3초 안인 것. Immich 업로드 폴더는 평평해서 해·기기가 다른 IMG_0010이
+    촬영 시각이 5초 안인 것. Immich 업로드 폴더는 평평해서 해·기기가 다른 IMG_0010이
     여럿이라 이름만으로는 짝을 정하지 않는다.
     """
     p = PHOTOS_DIR / rel
     fixed = None
     new = video_creation_time(p)
     gap = _seconds_between(new, taken)
-    if gap and abs(gap) <= 14 * 3600 and abs(gap - round(gap / 3600) * 3600) < 2:
+    # 현지 시각 문자열과 mvhd는 2~3초 어긋나기도 한다 — 몇 시간 ± 10초면 시간대 오류
+    if gap and abs(gap) <= 14 * 3600 + 10 and abs(gap - round(gap / 3600) * 3600) <= 10:
         fixed = new
     when = fixed or taken
     if not ((duration or 0) <= LIVE_MAX_SECONDS and is_live_video(p)):

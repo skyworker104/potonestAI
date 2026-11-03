@@ -192,8 +192,12 @@ else
   PD=/opt/photonest/photos
 fi
 
+# proot 리눅스는 시간대가 UTC라 "오늘"·동영상 촬영 시각이 9시간 어긋난다. 태블릿의 시간대를
+# tzdata 없이도 되는 POSIX 꼴로 넘긴다 (+0900 → UTC-09:00, 부호가 반대인 게 POSIX 규칙).
+TZP=UTC$(date +%z | sed -E 's/^\+/M/; s/^-/+/; s/^M/-/; s/([0-9]{2})([0-9]{2})$/\1:\2/')
+
 tmux new-session -d -s photonest \
-  "proot-distro login __DISTRO__ $BINDS -- bash -c 'cd /opt/photonest && HOST=0.0.0.0 PHOTOS_DIR=$PD ./run.sh'"
+  "proot-distro login __DISTRO__ $BINDS -- bash -c 'cd /opt/photonest && TZ=$TZP HOST=0.0.0.0 PHOTOS_DIR=$PD ./run.sh'"
 echo "✅ PhotoNest 시작됨 (tmux 세션 photonest)"
 echo "   사진 원본:       $PD${SD:+   (SD 카드: $SD)}"
 echo "   이 태블릿에서:   http://localhost:8765"

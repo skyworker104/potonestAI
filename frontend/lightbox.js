@@ -23,12 +23,82 @@ function openLightbox(index) {
 
   const token = ++lbVideoToken;
   if (it.type === "video") watchPlayback(it, media.querySelector("video"), token);
+  else if (it.live_video) setupLive(it, media, token);
 
   $("#lb-fav").textContent = it.favorite ? "⭐" : "☆";
   $("#lightbox").hidden = false;
   // 기본은 사진만 크게 — 정보 패널은 ℹ️로 열기 (열려 있었다면 내용 갱신)
   if (lbInfoVisible) renderLbInfo();
   else setLbInfo(false);
+}
+
+// 아이폰 라이브 포토 — 사진 위에 짝 동영상(2~3초)을 겹쳐 두고, 열 때 소리 없이 한 번,
+// 사진을 길게 누르거나 LIVE를 누르면 소리와 함께 움직인다(손을 떼면 멈춤). 동영상은
+// HEVC라 서버가 변환을 마쳐야 화면이 나온다 — 그 전엔 LIVE가 '준비 중'으로 보인다.
+const LIVE_HOLD_MS = 250;
+
+function setupLive(it, media, token) {
+  const img = media.querySelector("img");
+  const v = document.createElement("video");
+  v.className = "lb-live";
+  v.playsInline = true;
+  v.preload = "auto";
+  v.muted = true;
+  v.src = `/api/media/${it.id}/live`;
+  const btn = document.createElement("button");
+  btn.className = "lb-live-btn";
+  btn.textContent = "◉ LIVE";
+  media.append(v, btn);
+
+  let ready = false;
+  const play = (sound) => {
+    if (!ready) return;
+    v.muted = !sound;
+    v.currentTime = 0;
+    v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+  };
+  const stop = () => { v.pause(); media.classList.remove("live-on"); };
+  v.addEventListener("playing", () => media.classList.add("live-on"));
+  v.addEventListener("ended", () => media.classList.remove("live-on"));
+  v.addEventListener("loadeddata", () => {
+    // 변환 전 HEVC는 소리만 있고 화면 크기가 0 — 보이지 않는 동영상은 틀지 않는다
+    ready = v.videoWidth > 0;
+    btn.classList.toggle("waiting", !ready);
+    if (ready) play(false);
+  });
+  btn.onclick = (e) => { e.stopPropagation(); play(true); };
+
+  let hold = null, x0 = 0, y0 = 0;
+  img.addEventListener("pointerdown", (e) => {
+    x0 = e.clientX; y0 = e.clientY;
+    hold = setTimeout(() => play(true), LIVE_HOLD_MS);
+  });
+  img.addEventListener("pointermove", (e) => {   // 넘기려고 미는 중이면 누르기가 아니다
+    if (Math.abs(e.clientX - x0) + Math.abs(e.clientY - y0) > 12) clearTimeout(hold);
+  });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
+    img.addEventListener(ev, () => { clearTimeout(hold); if (!v.paused) stop(); });
+  }
+  img.addEventListener("contextmenu", (e) => e.preventDefault());  // 길게 누르기 = 저장 메뉴 막기
+
+  // 아직 변환 전이면 다음 차례로 당기고, 끝나면 다시 불러온다
+  (async () => {
+    let waited = false;
+    while (token === lbVideoToken) {
+      const r = await api.post(`/api/media/${it.live_video}/playback`).catch(() => null);
+      if (token !== lbVideoToken) return;
+      const st = r?.status;
+      if (st !== "queued" && st !== "converting") {
+        if (st === "ready" && waited) v.src = `/api/media/${it.id}/live?v=${Date.now()}`;
+        if (st !== "ready" && !ready) btn.classList.add("waiting");
+        return;
+      }
+      waited = true;
+      btn.classList.add("waiting");
+      btn.title = "움직이는 사진을 이 브라우저용으로 변환하고 있어요";
+      await new Promise((res) => setTimeout(res, PLAYBACK_POLL_MS));
+    }
+  })();
 }
 
 // 브라우저가 화면을 못 띄우는 동영상(아이폰 HEVC 등)은 서버가 H.264로 변환한다.

@@ -131,6 +131,7 @@ function makeTile(it, index) {
   div.style.setProperty("--ar", ar.toFixed(3));
   const badges =
     (it.type === "video" ? `<span class="badge">▶ 동영상</span>` : "") +
+    (it.live_video ? `<span class="badge live-badge">◉ LIVE</span>` : "") +
     (it.favorite ? `<span class="fav-badge">⭐</span>` : "") +
     (it.score != null ? `<span class="score">${Math.round(it.score * 100)}%</span>` : "");
   div.innerHTML =

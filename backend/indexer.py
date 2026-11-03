@@ -155,12 +155,24 @@ def _takeout_sidecar(path: Path):
 _QT_EPOCH = datetime(1904, 1, 1, tzinfo=timezone.utc)  # QuickTime/MP4 시각 기준
 
 
-def video_creation_time(path: Path):
-    """MP4/MOV 컨테이너의 mvhd 아톰에서 촬영시각 추출 (ffmpeg 불필요).
+# 아이폰 MOV의 com.apple.quicktime.creationdate — "2026-10-09T18:03:18+0900"처럼
+# 찍은 곳의 현지 시각이 시간대와 함께 들어 있다. 사진 EXIF와 같은 기준이다.
+_LOCAL_DATE = re.compile(rb"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)[+-]\d\d:?\d\d")
+_LIVE_KEY = b"com.apple.quicktime.content.identifier"   # 라이브 포토 동영상 표식
 
-    저장값은 UTC(1904 기준 초)이므로 로컬 시각으로 변환해 반환.
-    값이 없거나 비정상이면 None.
+
+def video_creation_time(path: Path):
+    """동영상 촬영 시각 (현지 시각, 초 단위 ISO). 없거나 비정상이면 None.
+
+    아이폰 영상은 현지 시각 문자열을 쓴다. 그 밖에는 mvhd 아톰의 UTC(1904 기준 초)를
+    서버 시간대로 바꾼다 — 그래서 서버의 TZ가 맞아야 한다(태블릿 proot는 기본이 UTC라
+    예전엔 아이폰 영상이 모두 9시간 이르게 기록됐다).
     """
+    moov = _moov_atom(path)
+    if moov and b"com.apple.quicktime.creationdate" in moov:
+        m = _LOCAL_DATE.search(moov)
+        if m:
+            return m.group(1).decode()
     try:
         size = path.stat().st_size
         chunk = 3_000_000
@@ -234,6 +246,57 @@ def video_location(path: Path):
     if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
         return None, None
     return lat, lon
+
+
+def is_live_video(path: Path):
+    """아이폰 라이브 포토의 동영상 부분인가."""
+    moov = _moov_atom(path)
+    return bool(moov and _LIVE_KEY in moov)
+
+
+LIVE_MAX_SECONDS = 5
+LIVE_MAX_GAP = 3           # 사진과 동영상 촬영 시각 차이(초) — 실제로는 1초 안팎
+
+
+def _seconds_between(a, b):
+    try:
+        return (datetime.fromisoformat(a) - datetime.fromisoformat(b)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def check_video(mid, rel, taken, duration):
+    """동영상 하나 확인 — (정정할 촬영 시각 또는 None, 짝 사진 id 또는 None, 끝났나).
+
+    촬영 시각: 다시 읽은 값이 기존 값과 정확히 몇 시간 차이 나면 시간대 오류로 보고 고친다
+    (사용자가 고친 시각이나 다른 근거로 정한 시각은 건드리지 않는다).
+    짝 사진: 라이브 동영상이면 같은 폴더, 같은 이름(업로드 때 붙은 _1 꼴 허용)의 사진 중
+    촬영 시각이 3초 안인 것. Immich 업로드 폴더는 평평해서 해·기기가 다른 IMG_0010이
+    여럿이라 이름만으로는 짝을 정하지 않는다.
+    """
+    p = PHOTOS_DIR / rel
+    fixed = None
+    new = video_creation_time(p)
+    gap = _seconds_between(new, taken)
+    if gap and abs(gap) <= 14 * 3600 and abs(gap - round(gap / 3600) * 3600) < 2:
+        fixed = new
+    when = fixed or taken
+    if not ((duration or 0) <= LIVE_MAX_SECONDS and is_live_video(p)):
+        return fixed, None, True
+    folder, name = os.path.split(rel)
+    # IMG_0010_1 → IMG_0010 (업로드 때 이름이 겹쳐 붙은 번호만 — IMG_0010의 _0010은 그대로)
+    stem = re.sub(r"(?<=\d{4})_\d{1,2}$", "", os.path.splitext(name)[0])
+    same = re.compile(rf"{re.escape(stem)}(_\d+)?", re.I)
+    best = None
+    for pid, ppath, ptaken in db.live_partner_candidates(folder, stem):
+        pf, pn = os.path.split(ppath)
+        if pf != folder or not same.fullmatch(os.path.splitext(pn)[0]):
+            continue
+        d = _seconds_between(ptaken, when)
+        if d is not None and abs(d) <= LIVE_MAX_GAP and (best is None or abs(d) < best[0]):
+            best = (abs(d), pid)
+    # 짝 사진이 아직 안 올라왔을 수 있다 — 다음 색인 때 다시 본다
+    return fixed, best and best[1], best is not None
 
 
 def extract_exif(path: Path):
@@ -706,6 +769,20 @@ def _run_pipeline(force):
         except Exception:
             pass
 
+        # 동영상 촬영 시각 정정 + 아이폰 라이브 포토 짝 잇기 (동영상마다 한 번)
+        try:
+            pending = db.videos_to_live_check()
+            if pending:
+                _state["phase"] = "라이브 포토"
+                _state["total"] = len(pending)
+                _state["done"] = 0
+                for mid, rel, taken, dur in pending:
+                    fixed, photo, done = check_video(mid, rel, taken, dur)
+                    db.set_live_checked(mid, fixed, photo, done)
+                    _state["done"] += 1
+        except Exception:
+            pass
+
         # GPS → 지명 매핑 (역지오코딩) — "협재 사진" 같은 지명 검색용.
         # 최초 1회 GeoNames 다운로드(~12MB), 이후 순수 계산이라 빠름.
         try:
@@ -816,6 +893,8 @@ def move_to_trash(media_id):
         # 사진 원본이 SD 카드에 있으면 휴지통(data/)과 저장장치가 달라 rename이 EXDEV로 실패한다
         shutil.move(str(src), str(dst))
     db.set_trashed(media_id, str(dst.relative_to(DATA_DIR)))
+    if m.get("live_video"):     # 라이브 포토는 움직이는 부분도 함께
+        move_to_trash(m["live_video"])
     return True
 
 
@@ -829,6 +908,8 @@ def restore_from_trash(media_id):
     if src.exists():
         shutil.move(str(src), str(dst))
     db.set_restored(media_id)
+    if m.get("live_video"):
+        restore_from_trash(m["live_video"])
     return True
 
 
@@ -836,6 +917,8 @@ def delete_permanently(media_id):
     m = db.get_media(media_id)
     if not m:
         return False
+    if m.get("live_video"):
+        delete_permanently(m["live_video"])
     if m["trashed_at"] and m.get("trash_path"):
         f = DATA_DIR / m["trash_path"]
         if f.exists():

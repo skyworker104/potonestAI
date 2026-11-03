@@ -97,6 +97,12 @@ MIGRATIONS = [
     # 동영상 코덱 ("h264", "hevc" …, 못 읽으면 "?") — 브라우저가 못 띄우는 코덱은
     # playback.py가 H.264로 변환해 둔다. NULL = 아직 안 읽음(색인이 채운다).
     "ALTER TABLE media ADD COLUMN video_codec TEXT",
+    # 아이폰 라이브 포토 — 사진(live_video = 짝 동영상 id)과 2~3초 동영상(live_of = 사진 id).
+    # 짝 동영상은 따로 보이지 않고 사진을 길게 누르면 움직인다. live_checked: 동영상을
+    # 한 번 읽어 촬영 시각 정정·짝 찾기를 마쳤는가 (짝을 못 찾은 라이브 동영상은 다시 본다).
+    "ALTER TABLE media ADD COLUMN live_video TEXT",
+    "ALTER TABLE media ADD COLUMN live_of TEXT",
+    "ALTER TABLE media ADD COLUMN live_checked INTEGER DEFAULT 0",
 ]
 
 
@@ -126,8 +132,10 @@ def init():
 
 MEDIA_COLS = (
     "id, path, type, taken_at, lat, lon, width, height, duration, favorite, "
-    "trashed_at, comment, place_name, added_at"
+    "trashed_at, comment, place_name, added_at, live_video"
 )
+# 라이브 포토의 짝 동영상은 사진의 일부 — 목록·검색·지도·정리에 따로 나오지 않는다
+NOT_LIVE_PART = "live_of IS NULL"
 
 
 def row_to_item(r):
@@ -234,6 +242,36 @@ def remove_missing(present_paths):
     return len(gone)
 
 
+def videos_to_live_check():
+    """아직 촬영 시각 정정·라이브 포토 짝 찾기를 안 한 동영상 (id, path, taken_at, duration)."""
+    with conn() as c:
+        return [tuple(r) for r in c.execute(
+            "SELECT id, path, taken_at, duration FROM media WHERE type='video' "
+            "AND trashed_at IS NULL AND live_checked = 0 AND path IS NOT NULL").fetchall()]
+
+
+def live_partner_candidates(folder, stem):
+    """같은 폴더에서 이름이 stem(또는 stem_1 꼴)인, 아직 짝 없는 사진 (id, path, taken_at)."""
+    prefix = f"{folder}/{stem}" if folder else stem
+    with conn() as c:
+        return [tuple(r) for r in c.execute(
+            "SELECT id, path, taken_at FROM media WHERE type='image' AND trashed_at IS NULL "
+            "AND live_video IS NULL AND path LIKE ?", (prefix + "%",)).fetchall()]
+
+
+def set_live_checked(video_id, taken_at=None, photo_id=None, done=True):
+    """동영상 확인 결과 — 정정한 촬영 시각, 짝 사진이 있으면 서로 잇는다.
+    done=False면 다음 색인 때 다시 본다(짝 사진이 아직 안 올라온 라이브 동영상)."""
+    with conn() as c:
+        if taken_at:
+            c.execute("UPDATE media SET taken_at=? WHERE id=?", (taken_at, video_id))
+        if photo_id:
+            c.execute("UPDATE media SET live_of=? WHERE id=?", (photo_id, video_id))
+            c.execute("UPDATE media SET live_video=? WHERE id=?", (video_id, photo_id))
+        if done:
+            c.execute("UPDATE media SET live_checked=1 WHERE id=?", (video_id,))
+
+
 def taken_range(media_ids):
     """사진들의 (가장 이른, 가장 늦은) 촬영 시각 — 없으면 (None, None)."""
     lo = hi = None
@@ -267,6 +305,7 @@ def list_photos(month=None, album_id=None, favorites=False, trashed=False,
         where.append("trashed_at IS NOT NULL")
     else:
         where.append("trashed_at IS NULL")
+    where.append("media." + NOT_LIVE_PART)
     if month:
         where.append("substr(taken_at, 1, 7) = ?")
         args.append(month)
@@ -292,10 +331,10 @@ def timeline_months():
     with conn() as c:
         rows = c.execute(
             """SELECT substr(taken_at, 1, 7) ym, COUNT(*) n FROM media
-               WHERE trashed_at IS NULL GROUP BY ym ORDER BY ym DESC"""
+               WHERE trashed_at IS NULL AND live_of IS NULL GROUP BY ym ORDER BY ym DESC"""
         ).fetchall()
         total = c.execute(
-            "SELECT COUNT(*) n FROM media WHERE trashed_at IS NULL"
+            "SELECT COUNT(*) n FROM media WHERE trashed_at IS NULL AND live_of IS NULL"
         ).fetchone()["n"]
     return {"months": [{"ym": r["ym"], "count": r["n"]} for r in rows], "total": total}
 
@@ -333,6 +372,7 @@ def set_restored(media_id):
 def delete_media(media_id):
     with conn() as c:
         c.execute("DELETE FROM media WHERE id=?", (media_id,))
+        c.execute("UPDATE media SET live_video=NULL WHERE live_video=?", (media_id,))
         c.execute("DELETE FROM album_items WHERE media_id=?", (media_id,))
 
 
@@ -342,7 +382,7 @@ def list_trash():
             row_to_item(r)
             for r in c.execute(
                 f"SELECT {MEDIA_COLS} FROM media WHERE trashed_at IS NOT NULL "
-                "ORDER BY trashed_at DESC"
+                "AND live_of IS NULL ORDER BY trashed_at DESC"
             ).fetchall()
         ]
 
@@ -353,7 +393,7 @@ def geo_items():
             row_to_item(r)
             for r in c.execute(
                 f"SELECT {MEDIA_COLS} FROM media "
-                "WHERE trashed_at IS NULL AND lat IS NOT NULL"
+                "WHERE trashed_at IS NULL AND lat IS NOT NULL AND live_of IS NULL"
             ).fetchall()
         ]
 
@@ -380,7 +420,8 @@ def cleanup_rows():
             f"""SELECT {MEDIA_COLS}, hash, length(trim(coalesce(ocr_text, ''))) AS ocr_len,
                        EXISTS(SELECT 1 FROM album_items ai WHERE ai.media_id = media.id)
                          AS in_album
-                FROM media WHERE trashed_at IS NULL ORDER BY taken_at DESC"""
+                FROM media WHERE trashed_at IS NULL AND live_of IS NULL
+                ORDER BY taken_at DESC"""
         ).fetchall()
 
 

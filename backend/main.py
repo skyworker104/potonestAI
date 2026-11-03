@@ -1210,6 +1210,18 @@ def media_playback(media_id: str):
     return {"status": playback.request(media_id)}
 
 
+@app.get("/api/media/{media_id}/live")
+def media_live(media_id: str):
+    """라이브 포토의 움직이는 부분 — 브라우저용 변환본이 있으면 그것, 없으면 원본."""
+    m = db.get_media(media_id)
+    v = db.get_media(m["live_video"]) if m and m.get("live_video") else None
+    p = _media_file(v) if v else None
+    if not p:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    conv = playback.ready_file(v["id"], p)
+    return FileResponse(conv, media_type="video/mp4") if conv else FileResponse(p)
+
+
 @app.post("/api/media/{media_id}/trash")
 def trash_media(media_id: str):
     return {"ok": indexer.move_to_trash(media_id)}

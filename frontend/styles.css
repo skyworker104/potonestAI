@@ -637,3 +637,6 @@ body.chat-hidden #chat-panel { display: none; }
 /* 개발용 앱 QR */
 .dev-app { margin-top: 14px; padding-top: 14px; border-top: 1px dashed #2c3245; display: flex; flex-direction: column; gap: 6px; }
 #app-dev-qr:not(:empty) { display: flex; justify-content: center; padding: 12px; background: #fff; border-radius: 10px; align-self: center; }
+
+/* 대화로 만든 앨범 바로 열기 */
+.msg .album-open { display: block; margin-top: 8px; }

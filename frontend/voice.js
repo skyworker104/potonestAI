@@ -49,6 +49,8 @@ async function sendToAI(message) {
       message,
       history: chatHistory.slice(-MAX_HISTORY_TURNS),
       session_id: SESSION_ID,
+      // 검색 결과에서 골라 둔 사진 — "이 사진들 앨범으로 만들어줘"가 그것만 넣는다
+      selected_ids: state.view === "search" ? [...state.selection] : [],
     });
     thinking.remove();
     const aiMsg = addMsg(data.reply, "ai");
@@ -70,6 +72,16 @@ async function sendToAI(message) {
       b.className = "engine-badge";
       b.textContent = badge;
       aiMsg.appendChild(b);
+    }
+    // 찾은 사진으로 앨범을 만들었으면 바로 열어 볼 수 있게
+    if (data.album_id) {
+      const open = document.createElement("button");
+      open.className = "chip album-open";
+      open.textContent = `📁 '${data.album_name}' 앨범 열기`;
+      open.onclick = () => switchView("albumDetail", { albumId: data.album_id });
+      aiMsg.appendChild(open);
+      clearSelection();
+      if (state.view === "albums") switchView("albums");
     }
     chatHistory.push({ role: "user", content: message });
     chatHistory.push({ role: "assistant", content: data.reply });
@@ -198,8 +210,10 @@ function tryUICommand(text) {
   if (/휴지통.*(보여|열어)/.test(t)) { switchView("trash"); speak("휴지통이에요."); return true; }
 
   // --- 앨범 ---
+  // "이 사진들 앨범 만들어줘"처럼 찾은 사진을 가리키면 서버가 그 사진으로 만든다
+  const RESULT_REF = /(이|그|저|요|방금|찾은|검색된|나온|이런)(사진|동영상|영상|것|거|결과)|이것|그것|이거|그거|이걸|그걸|결과|전부|모두|사진들|영상들/;
   const mkAlbum = text.match(/(.+?)\s*(이라는|라는)?\s*앨범\s*(을|를)?\s*만들/);
-  if (mkAlbum) {
+  if (mkAlbum && !RESULT_REF.test(t)) {
     const name = mkAlbum[1].replace(/['"“”]/g, "").trim();
     if (name) {
       api.post("/api/albums", { name }).then(() => {
@@ -210,7 +224,7 @@ function tryUICommand(text) {
     }
   }
   const addAlbum = text.match(/(.+?)\s*앨범에\s*(넣어|추가|저장)/);
-  if (addAlbum && lbIndex >= 0) {
+  if (addAlbum && lbIndex >= 0 && !/(들|전부|모두)/.test(t)) {
     const name = addAlbum[1].replace(/(이\s*사진\s*)/, "").trim();
     api.get("/api/albums").then(({ albums }) => {
       const found = albums.find((a) => a.name.includes(name));

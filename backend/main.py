@@ -42,6 +42,7 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatTurn]] = None
     session_id: Optional[str] = None  # 대화 세션(브라우저 탭) — 직전 검색 상태를 나눈다
+    selected_ids: Optional[List[str]] = None  # 검색 결과에서 골라 둔 사진 — "이 사진들"이 가리킨다
 
 
 class AlbumCreate(BaseModel):
@@ -654,6 +655,7 @@ def _run_search(message, *, search_text, bbox, place, date_from, date_to,
         date_from=date_from, date_to=date_to, media_type=media_type,
         person=person, hour_from=hour_from, hour_to=hour_to,
         place_text=place_text, result_ids=[r["id"] for r in results],
+        total=total or n,       # 화면에 보인 것보다 조건에 맞는 사진이 많으면 앨범 만들 때 밝힌다
         skill_id=skill_id,      # 피드백을 귀속시킬 스킬
         view_credited=False,    # 열람 신호는 검색당 1회만 반영
         refined=refined,        # 정제 검색이면 긍정 피드백 때 스킬로 저장하지 않음
@@ -692,6 +694,11 @@ def chat(req: ChatRequest):
     message = req.message
     ls = _session(req.session_id)
     notes = []
+
+    # 찾은 사진으로 앨범 만들기 — "이 사진들을 앨범으로 만들어줘"
+    album_req = llm.detect_album_request(message)
+    if album_req:
+        return _album_from_results(req, album_req, ls)
 
     # -2) "아니 ~ / 그거 말고 ~" — 직전 결과를 부정하며 새로 요청. 부정어만 떼고
     #     새 검색으로 처리하고, 직전 검색에 쓴 스킬은 틀린 것으로 기록한다.
@@ -936,6 +943,76 @@ def _detect_album(message):
         if len(name) >= 2 and name == core:
             return a, ""
     return None
+
+
+def _album_name_for(ls, ids):
+    """직전 검색으로 앨범 이름 짓기 — "제주도 바다 2025.07" (장소·내용·인물 + 촬영 기간)."""
+    from . import skills
+    place = ls.get("place")
+    parts = [place["name"] if place else ls.get("place_text"), ls.get("search_text"),
+             ls["person"]["name"] if ls.get("person") else None]
+    name = " ".join(dict.fromkeys(p for p in parts if p))
+    if not name:
+        name = skills._strip_terms(ls.get("query") or "") or "찾은 사진"
+    lo, hi = db.taken_range(ids)
+    if lo:
+        a, b = lo[:7].replace("-", "."), hi[:7].replace("-", ".")
+        name += f" {a}" if a == b else f" {a}~{b}"
+    taken = {(x["name"] or "").strip() for x in db.list_albums()}
+    base, n = name, 2
+    while name in taken:        # 지은 이름이 겹치면 남의 앨범에 섞지 않는다
+        name, n = f"{base} ({n})", n + 1
+    return name
+
+
+def _album_from_results(req, ar, ls):
+    """직전 검색 결과(또는 골라 둔 사진)를 앨범으로 — 있는 이름이면 그 앨범에 넣는다."""
+    if llm.detect_refine(req.message) is not None:
+        return {"reply": "먼저 \"그 중에서 ~만\"으로 좁힌 다음, \"이 사진들 앨범으로 만들어줘\"라고 말씀해 주세요.",
+                "intent": "chat", "engine": "instant", "results": []}
+    searched = None
+    if ar["search"]:            # "제주도 바다 사진 찾아서 앨범으로 만들어줘" — 먼저 찾는다
+        searched = chat(ChatRequest(message=ar["search"], history=req.history,
+                                    session_id=req.session_id))
+        if searched.get("intent") != "search" or not searched["results"]:
+            return searched
+    picked = [] if searched else [i for i in (req.selected_ids or []) if db.get_media(i)]
+    ids = picked or list(ls.get("result_ids") or [])
+    if not ids:
+        return {"reply": "앨범에 넣을 사진이 없어요. 먼저 사진을 찾은 다음 "
+                         "\"이 사진들 앨범으로 만들어줘\"라고 말씀해 주세요.",
+                "intent": "chat", "engine": "instant", "results": []}
+
+    want = (ar["name"] or "").strip()
+    album = next((a for a in db.list_albums()
+                  if want and (a["name"] or "").strip().lower() == want.lower()), None)
+    created = album is None
+    if created:
+        name = want or _album_name_for(ls, ids)
+        album = {"id": db.create_album(name), "name": name}
+    before = set(_album_ids(album)) if not created else set()
+    db.add_to_album(album["id"], ids)
+    added = sum(1 for i in ids if i not in before)
+
+    what = "고른" if picked else "찾은"
+    if created:
+        reply = f"'{album['name']}' 앨범을 만들고 {what} {added:,}개를 넣었어요."
+    elif added:
+        reply = f"'{album['name']}' 앨범에 {what} {added:,}개를 넣었어요."
+    else:
+        reply = f"{what} 사진은 이미 모두 '{album['name']}' 앨범에 있어요."
+    if not created and added < len(ids) and added:
+        reply += f" ({len(ids) - added:,}개는 이미 들어 있었어요)"
+    total = ls.get("total") or 0
+    if not picked and total > len(ids):
+        reply += f" 조건에 맞는 사진은 모두 {total:,}장인데, 화면에 보인 {len(ids):,}장만 넣었어요."
+    out = {"reply": reply, "intent": "album", "engine": "instant", "results": [],
+           "album_id": album["id"], "album_name": album["name"], "created": created}
+    if searched:                # 찾은 결과도 화면에 보여 준다
+        out.update(intent="search", results=searched["results"],
+                   explanation=searched.get("explanation"),
+                   reply=searched["reply"] + " " + reply)
+    return out
 
 
 def _album_ids(album):

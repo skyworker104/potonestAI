@@ -234,6 +234,21 @@ def remove_missing(present_paths):
     return len(gone)
 
 
+def taken_range(media_ids):
+    """사진들의 (가장 이른, 가장 늦은) 촬영 시각 — 없으면 (None, None)."""
+    lo = hi = None
+    ids = list(media_ids)
+    with conn() as c:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            r = c.execute(f"SELECT MIN(taken_at), MAX(taken_at) FROM media WHERE id IN "
+                          f"({','.join('?' * len(chunk))}) AND taken_at IS NOT NULL", chunk).fetchone()
+            if r[0]:
+                lo = min(lo or r[0], r[0])
+                hi = max(hi or r[1], r[1])
+    return lo, hi
+
+
 def get_media(media_id):
     with conn() as c:
         r = c.execute(

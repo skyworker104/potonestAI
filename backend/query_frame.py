@@ -62,6 +62,8 @@ _FAVORITE = re.compile(
     r"(?:\s*(?:에\s*(?:있는|넣은|넣어\s*둔|추가한|추가된)|한|된|해\s*둔|해둔|누른|표시한|목록))?"
 )
 _SCREENSHOT = re.compile(r"(?:스크린\s*샷|스샷|화면\s*캡[처쳐]|캡[처쳐])(?:\s*(?:한|된|해\s*둔|해둔))?")
+# 아이폰 라이브 포토 — '라이브'만으로는 안 본다("콘서트 라이브 영상"은 내용)
+_LIVE = re.compile(r"(?:라이브\s*(?:포토|사진)|live\s*photos?|움직이는\s*사진)", re.I)
 _VIDEO = re.compile(r"(?:동영상|영상|비디오)")
 _PHOTO_ONLY = re.compile(r"사진만")
 
@@ -156,7 +158,7 @@ def parse(message, now=None):
       upload                       '올린·업로드·백업' 질의인가 (정렬도 올린 시각 기준)
       order                        "taken_desc" | "taken_asc" | "added_desc" | None
       limit                        "10장만" → 10
-      favorites, kind("screenshot"), media_type("image"|"video")
+      favorites, kind("screenshot"|"live"), media_type("image"|"video")
       months/season                계절 → 달 목록
       hour_from/hour_to/time_span  시간대 ("아침에")
       greeting                     인사
@@ -210,6 +212,10 @@ def parse(message, now=None):
     m = _SCREENSHOT.search(text)
     if m:
         f["kind"] = "screenshot"
+        text = _take(text, m)
+    m = _LIVE.search(text)
+    if m:
+        f["kind"] = "live"
         text = _take(text, m)
     m = _VIDEO.search(text)
     if m:

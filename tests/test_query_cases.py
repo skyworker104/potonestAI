@@ -63,6 +63,9 @@ FRAME_CASES = [
     ("A3", "사진만 보여줘", dict(media_type="image"), ""),
     ("A4", "스크린샷 보여줘", dict(kind="screenshot"), ""),
     ("A4", "캡처한 사진", dict(kind="screenshot"), ""),
+    ("A5", "라이브 포토 보여줘", dict(kind="live", media_type=None), ""),
+    ("A5", "작년 라이브 사진", dict(kind="live"), ""),
+    ("A5", "콘서트 라이브 영상", dict(kind=None, media_type="video"), "콘서트 라이브"),
     # --- C: 내용만 (조건이 없어야 한다) ---
     ("C1", "강아지 사진 보여줘", dict(order=None, upload=False, favorites=False), "강아지"),
     ("C1", "선물 받은 꽃 사진", dict(upload=False), "선물 받은 꽃"),  # '받은'은 올린 시기가 아니다
@@ -127,6 +130,7 @@ CHAT_CASES = [
     ("O3", "최근 사진 10장만", dict(top_k=10, search_text=None), False),
     ("A1", "즐겨찾기한 사진 보여줘", dict(favorites=True, search_text=None), False),
     ("A4", "스크린샷 보여줘", dict(kind="screenshot", search_text=None), False),
+    ("A5", "라이브 포토만 보여줘", dict(kind="live", search_text=None), False),
     ("T5", "작년 사진", dict(search_text=None), False),
     ("T10", "여름에 찍은 사진", dict(months=[6, 7, 8], search_text=None), False),
     ("C1", "강아지 사진 보여줘", dict(search_text="강아지", order=None), True),

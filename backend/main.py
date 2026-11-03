@@ -454,6 +454,8 @@ def _frame_phrase(fx, date_label, media_type=None):
         return f"즐겨찾기한 {obj}"
     if fx.get("kind") == "screenshot":
         return "스크린샷을"
+    if fx.get("kind") == "live":
+        return "라이브 포토를"
     if fx.get("order") == "taken_asc":
         return f"오래된 {noun}부터"
     if fx.get("season"):
@@ -504,6 +506,8 @@ def _explain(*, place, place_text, search_text, date_from, date_to, date_label,
         lines.append("🖼 종류: 사진만 (동영상 제외)")
     if fx.get("kind") == "screenshot":
         lines.append("📱 종류: 스크린샷만")
+    elif fx.get("kind") == "live":
+        lines.append("◉ 종류: 라이브 포토만 (길게 누르면 움직여요)")
     if fx.get("favorites"):
         lines.append("⭐ 즐겨찾기한 사진만")
     order_label = {"taken_asc": "오래된 순(촬영일)", "added_desc": "최근 올린 순",

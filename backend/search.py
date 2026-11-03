@@ -427,6 +427,7 @@ def find(search_text, date_from=None, date_to=None, media_type=None,
         and _in_months(it, months)
         and (not favorites or it.get("favorite"))
         and (kind != "screenshot" or _SCREENSHOT_PATH.search(it["path"] or ""))
+        and (kind != "live" or it.get("live_video"))
         and (media_type in (None, "", "all") or it["type"] == media_type)
         and it["id"] not in exclude
         # 지명(위치) 검색이면 GPS가 해당 지역 안인 사진만 (정확한 장소 판정)

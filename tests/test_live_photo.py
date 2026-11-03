@@ -137,3 +137,13 @@ def test_live_endpoint_serves_the_motion(lib, monkeypatch):
     with TestClient(main.app) as c:
         assert c.get(f"/api/media/{photo}/live").content == (lib / "IMG_4.MOV").read_bytes()
         assert c.get(f"/api/media/{vid}/live").status_code == 404
+
+
+def test_search_live_photos_only(lib):
+    from backend import search
+    _mov(lib / "IMG_5.MOV", "2026-10-09T18:03:18+0900")
+    add(lib, "IMG_5.MOV", "video", "2026-10-09T18:03:18", 2.5)
+    photo = add(lib, "IMG_5.JPG", "image", "2026-10-09T18:03:18")
+    add(lib, "IMG_6.JPG", "image", "2026-10-09T18:10:00")
+    run_check()
+    assert [it["id"] for it in search.find(None, kind="live")] == [photo]

@@ -246,37 +246,20 @@ def process_pending(now_ts=None):
     return total_added
 
 
-# ---------- 처리 내역 (어떤 zip이 무엇이 되었나) ----------
+# ---------- 처리 내역 (zip별 작업 이력) ----------
 
 def _migrate_legacy():
-    """내역 기능 이전에 처리된 zip(takeout_state.json에만 기록)을 내역으로 옮긴다.
-
-    _zips_done에 zip이 남아 있으면 목차(central directory)만 읽어 — 압축은 안
-    푼다 — 어떤 사진이 그 zip에서 나왔는지 복원한다.
-    """
+    """내역 기능 이전에 처리된 zip(takeout_state.json에만 기록)을 내역으로 옮긴다."""
     state = _load_state()
     if not state:
         return
     with db.conn() as c:
         known = {r["zip_name"] for r in c.execute("SELECT zip_name FROM takeout_imports")}
-    root = _photos_dir()
-    done_dir = root / DONE_DIRNAME
-    exts = _media_exts()
-    base = root.resolve()
+    done_dir = _photos_dir() / DONE_DIRNAME
     for name, rec in state.items():
         if name in known:
             continue
-        kept = done_dir / name
-        files = []
-        if kept.is_file():
-            try:
-                with zipfile.ZipFile(kept) as zf:
-                    for n in zf.namelist():
-                        t = _safe_target(root, n)
-                        if t is not None and t.suffix.lower() in exts and t.exists():
-                            files.append((str(t.relative_to(base)), True))
-            except (zipfile.BadZipFile, OSError):
-                pass
+        kept = (done_dir / name).is_file()
         with db.conn() as c:
             cur = c.execute(
                 "INSERT INTO takeout_imports (zip_name, size, source, uploaded_at,"
@@ -285,94 +268,37 @@ def _migrate_legacy():
             iid = cur.lastrowid
         _finish_import(
             iid, status="error" if rec.get("error") else "ok", error=rec.get("error"),
-            added=rec.get("added") or 0, skipped=rec.get("skipped") or 0, files=files,
-            zip_state="kept" if kept.is_file() else "deleted",
-            kept_name=name if kept.is_file() else None, now_ts=rec.get("ts"))
-
-
-def _album_folder(path_nfc: str):
-    """'…/Google 포토/<앨범>/파일'이면 앨범명, 아니면 None (detect_albums와 같은 규칙)."""
-    parts = Path(path_nfc).parts
-    for i, p in enumerate(parts):
-        if p in _GPHOTO_DIRS and i + 2 <= len(parts) - 1:
-            folder = parts[i + 1]
-            return None if _NON_ALBUM.match(folder) else folder
-    return None
+            added=rec.get("added") or 0, skipped=rec.get("skipped") or 0,
+            zip_state="kept" if kept else "deleted",
+            kept_name=name if kept else None, now_ts=rec.get("ts"))
 
 
 def history():
-    """처리 내역 + zip별 사진들의 현재 색인 상태 집계 (최근 것부터)."""
-    import unicodedata
-    nfc = lambda s: unicodedata.normalize("NFC", s)  # noqa: E731 — macOS NFD 경로 대응
+    """zip별 작업 이력 (최근 것부터).
+
+    existing: zip 안 미디어 중 이미 라이브러리에 있어 건너뛴 수. 파일 목록이
+    없는 옛 기록은 None — 그때는 skipped(사이드카 포함 전체 파일 수)만 있다.
+    """
     _migrate_legacy()
     with db.conn() as c:
-        imports = [dict(r) for r in c.execute(
-            "SELECT * FROM takeout_imports ORDER BY id DESC")]
-        file_rows = c.execute(
-            "SELECT import_id, path, is_new FROM takeout_import_files").fetchall()
-        media = c.execute(
-            "SELECT id, path, type, lat, taken_at, trashed_at, live_of,"
-            " embedding IS NOT NULL AS has_emb, ocr_scanned,"
-            " (ocr_text IS NOT NULL AND TRIM(ocr_text) != '') AS has_text,"
-            " faces_scanned, (caption IS NOT NULL AND caption != '') AS has_caption"
-            " FROM media").fetchall()
-        face_rows = c.execute(
-            "SELECT media_id, COUNT(*) AS n, GROUP_CONCAT(DISTINCT person_id) AS persons"
-            " FROM faces GROUP BY media_id").fetchall()
-    by_path = {nfc(m["path"]): m for m in media}
-    faces = {r["media_id"]: r for r in face_rows}
-    album_names = {a["name"]: a["id"] for a in db.list_albums()}
-    files_by_import = {}
-    for r in file_rows:
-        files_by_import.setdefault(r["import_id"], []).append(r)
-
-    out = []
-    for imp in imports:
-        rows = files_by_import.get(imp["id"], [])
-        st = dict(files=len(rows), photos=0, videos=0, live=0, trashed=0, missing=0,
-                  gps=0, dated=0, embedded=0, ocr_done=0, ocr_text=0,
-                  faces_done=0, faces=0, persons=0, captioned=0,
-                  albums=0, albums_created=0)
-        persons, albums = set(), set()
-        for r in rows:
-            m = by_path.get(nfc(r["path"]))
-            if m is None:
-                st["missing"] += 1   # 아직 색인 전이거나 영구 삭제됨
-                continue
-            if m["trashed_at"]:
-                st["trashed"] += 1
-                continue
-            if m["live_of"]:
-                st["live"] += 1      # 라이브 포토의 움직이는 부분 — 사진에 딸림
-                continue
-            st["photos" if m["type"] == "image" else "videos"] += 1
-            st["gps"] += m["lat"] is not None
-            st["dated"] += bool(m["taken_at"])
-            st["embedded"] += bool(m["has_emb"])
-            st["ocr_done"] += bool(m["ocr_scanned"])
-            st["ocr_text"] += bool(m["has_text"])
-            st["faces_done"] += bool(m["faces_scanned"])
-            st["captioned"] += bool(m["has_caption"])
-            f = faces.get(m["id"])
-            if f:
-                st["faces"] += f["n"]
-                persons.update(p for p in (f["persons"] or "").split(",") if p)
-            a = _album_folder(nfc(r["path"]))
-            if a:
-                albums.add(a)
-        st["persons"] = len(persons)
-        st["albums"] = len(albums)
-        st["albums_created"] = sum(1 for a in albums if a in album_names)
-        imp["stats"] = st
-        imp["kept_size"] = None
-        if imp["zip_state"] == "kept" and imp["kept_name"]:
-            kp = _photos_dir() / DONE_DIRNAME / imp["kept_name"]
+        rows = [dict(r) for r in c.execute(
+            "SELECT i.*, (SELECT COUNT(*) FROM takeout_import_files f"
+            "  WHERE f.import_id = i.id) AS media_files,"
+            " (SELECT COUNT(*) FROM takeout_import_files f"
+            "  WHERE f.import_id = i.id AND f.is_new = 0) AS existing"
+            " FROM takeout_imports i ORDER BY i.id DESC")]
+    done_dir = _photos_dir() / DONE_DIRNAME
+    for r in rows:
+        if not r.pop("media_files"):
+            r["existing"] = None
+        r["kept_size"] = None
+        if r["zip_state"] == "kept" and r["kept_name"]:
+            kp = done_dir / r["kept_name"]
             if kp.is_file():
-                imp["kept_size"] = kp.stat().st_size
+                r["kept_size"] = kp.stat().st_size
             else:
-                imp["zip_state"] = "deleted"  # 밖에서 지웠다
-        out.append(imp)
-    return out
+                r["zip_state"] = "deleted"  # 밖에서 지웠다
+    return rows
 
 
 # ---------- 보관 중인 zip 정리 ----------

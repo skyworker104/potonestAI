@@ -909,56 +909,40 @@ async function renderTakeoutDone() {
   } catch (_) { /* 무시 */ }
 }
 
-/* 처리 내역 — 어떤 zip을 언제 어떻게 받아, 그 사진들이 지금 어디까지 색인됐는지 */
+/* 처리 내역 — zip 파일별로 언제·어떻게 받아 어떻게 처리했는지 */
 async function renderTakeoutHistory() {
   const box = document.getElementById("takeout-history");
   if (!box) return;
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const when = (t) => (t ? esc(t.slice(5, 16)) : "");
   try {
     const { imports } = await api.get("/api/takeout/history");
     if (!imports.length) { box.innerHTML = ""; return; }
-    const pct = (n, of) => of ? ` (${Math.round(n / of * 100)}%)` : "";
-    const card = (imp) => {
-      const s = imp.stats;
-      const media = s.photos + s.videos;
-      const status = imp.status === "queued" ? "⏳ 처리 대기"
-        : imp.status === "error" ? `❌ 실패 — ${esc(imp.error || "")}` : "✅ 처리 완료";
-      const zipState = imp.zip_state === "kept"
-        ? `보관 중${imp.kept_size ? ` (${fmtBytes(imp.kept_size)})` : ""}`
-        : imp.zip_state === "deleted" ? "삭제됨" : "photos 폴더에 있음";
-      const chip = (label, val, sub) =>
-        `<div class="th-chip"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
-      const chips = imp.status !== "ok" ? "" : !s.files
-        ? `<p class="small">이 zip에서 나온 사진 목록이 없습니다 (내역 기능 이전에 처리되고 zip이 지워짐).</p>`
-        : `<div class="th-grid">
-            ${chip("🖼️ 사진", s.photos.toLocaleString(), s.live ? `라이브 ${s.live}` : "")}
-            ${chip("🎬 동영상", s.videos.toLocaleString())}
-            ${chip("📁 앨범 폴더", s.albums, `앨범 생성 ${s.albums_created}`)}
-            ${chip("📍 위치", s.gps.toLocaleString(), pct(s.gps, media))}
-            ${chip("📅 촬영일", s.dated.toLocaleString(), pct(s.dated, media))}
-            ${chip("🔎 AI 검색 색인", `${s.embedded}/${media}`, pct(s.embedded, media))}
-            ${chip("🔤 OCR", `${s.ocr_done}/${s.photos}`, `글자 발견 ${s.ocr_text}`)}
-            ${chip("🙂 얼굴 분석", `${s.faces_done}/${s.photos}`, `얼굴 ${s.faces} · 인물 ${s.persons}`)}
-            ${chip("📝 AI 설명", `${s.captioned}/${s.photos}`)}
-          </div>
-          ${s.missing || s.trashed ? `<p class="small">` +
-            (s.missing ? `아직 색인 전·삭제됨 ${s.missing}개 ` : "") +
-            (s.trashed ? `· 휴지통 ${s.trashed}개` : "") + `</p>` : ""}`;
-      return `<details class="th-item"${imp === imports[0] ? " open" : ""}>
-        <summary><strong>${esc(imp.zip_name)}</strong>
-          <small>${imp.size ? fmtBytes(imp.size) : ""} · ${imp.source === "upload" ? "웹 업로드" : "폴더에 직접"}
-          · ${esc((imp.processed_at || imp.uploaded_at || "").slice(0, 16))}</small></summary>
-        <p class="small">${status}${imp.status === "ok"
-          ? ` · 새로 추가 ${imp.added.toLocaleString()}개 · 이미 있음 ${(s.files - imp.added).toLocaleString()}개` : ""}
-          · zip: ${zipState}</p>
-        ${chips}
-      </details>`;
+    const row = (imp) => {
+      const result = imp.status === "queued" ? "⏳ 처리 대기"
+        : imp.status === "error" ? `❌ 실패 — ${esc(imp.error || "")}`
+        : `✅ 새로 추가 ${imp.added.toLocaleString()}개` +
+          (imp.existing != null
+            ? ` · 이미 있음 ${imp.existing.toLocaleString()}개`
+            : imp.skipped ? ` · 건너뜀 ${imp.skipped.toLocaleString()}개 파일` : "");
+      const zip = imp.zip_state === "kept"
+        ? `zip 보관 중${imp.kept_size ? ` (${fmtBytes(imp.kept_size)})` : ""}`
+        : imp.zip_state === "deleted" ? "zip 삭제됨" : "zip 대기 중";
+      const times = [
+        imp.uploaded_at ? `${imp.source === "upload" ? "업로드" : "넣음"} ${when(imp.uploaded_at)}` : "",
+        imp.processed_at ? `처리 ${when(imp.processed_at)}` : "",
+      ].filter(Boolean).join(" → ");
+      return `<div class="th-item">
+        <div class="th-head"><strong>${esc(imp.zip_name)}</strong>
+          <small>${imp.size ? fmtBytes(imp.size) : ""} · ${imp.source === "upload" ? "웹 업로드" : "폴더에 직접"}</small></div>
+        <div class="small">${result}</div>
+        <div class="small th-meta">${times}${times ? " · " : ""}${zip}</div>
+      </div>`;
     };
     box.innerHTML =
       `<div class="ta-box">
         <strong>📜 테이크아웃 처리 내역 ${imports.length}건</strong>
-        <p class="small">OCR·얼굴·AI 설명은 압축 해제 뒤 백그라운드로 이어서 진행되므로 숫자가 점점 늘어납니다.</p>
-        ${imports.map(card).join("")}
+        ${imports.map(row).join("")}
       </div>`;
   } catch (_) { /* 무시 */ }
 }

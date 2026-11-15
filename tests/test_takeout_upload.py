@@ -144,3 +144,91 @@ def test_keep_zip_option(env, keep):
 def test_setting_default_and_public():
     cfg = dict(settings._DEFAULTS)
     assert cfg["takeout_keep_zip"] is True
+
+
+# ---------- 처리 내역 · 보관 zip 정리 ----------
+
+def _process(root, name, files, keep=True):
+    settings.save({"takeout_keep_zip": keep})
+    (root / name).write_bytes(_make_zip(files))
+    return takeout.process_pending()
+
+
+def test_history_records_upload_and_stats(env):
+    root, client = env
+    blob = _make_zip({
+        "Takeout/Google 포토/제주 여행/a.jpg": b"a",
+        "Takeout/Google 포토/2016년의 사진/b.jpg": b"b",
+        "Takeout/Google 포토/제주 여행/a.jpg.supplemental-metadata.json": b"{}",
+    })
+    uid = _upload(client, "takeout-x.zip", blob, chunk=100)
+    client.post(f"/api/takeout/upload/{uid}/complete")
+    [imp] = takeout.history()
+    assert (imp["source"], imp["status"]) == ("upload", "queued")
+
+    settings.save({"takeout_keep_zip": True})
+    assert takeout.process_pending() == 2
+    # 색인된 것처럼 media 행을 만든다 — a.jpg는 OCR 글자·얼굴까지
+    with db.conn() as c:
+        c.execute("INSERT INTO media (id, path, type, lat, taken_at, ocr_scanned,"
+                  " ocr_text, faces_scanned) VALUES ('m1', ?, 'image', 33.5,"
+                  " '2020-01-01', 1, '감귤', 1)", ("Takeout/Google 포토/제주 여행/a.jpg",))
+        c.execute("INSERT INTO faces (media_id, person_id) VALUES ('m1', 7)")
+    [imp] = client.get("/api/takeout/history").json()["imports"]
+    assert (imp["source"], imp["status"], imp["added"]) == ("upload", "ok", 2)
+    assert imp["zip_state"] == "kept" and imp["kept_size"] == len(blob)
+    s = imp["stats"]
+    assert (s["files"], s["photos"], s["missing"]) == (2, 1, 1)
+    assert (s["gps"], s["ocr_done"], s["ocr_text"], s["faces"], s["persons"]) == (1, 1, 1, 1, 1)
+    assert (s["albums"], s["albums_created"]) == (1, 0)  # 연도 폴더는 앨범 아님
+
+
+def test_folder_drop_recorded_as_folder(env):
+    root, _ = env
+    _process(root, "takeout-f.zip", {"Takeout/Google 포토/a.jpg": b"1"}, keep=False)
+    [imp] = takeout.history()
+    assert (imp["source"], imp["zip_state"]) == ("folder", "deleted")
+
+
+def test_delete_done_zips(env):
+    root, client = env
+    _process(root, "takeout-1.zip", {"Takeout/a.jpg": b"1"})
+    _process(root, "takeout-2.zip", {"Takeout/b.jpg": b"2"})
+    zips = client.get("/api/takeout/done").json()["zips"]
+    assert [z["name"] for z in zips] == ["takeout-1.zip", "takeout-2.zip"]
+
+    r = client.post("/api/takeout/done/delete", json={"names": ["takeout-1.zip"]}).json()
+    assert r["deleted"] == 1 and r["freed"] > 0
+    states = {i["zip_name"]: i["zip_state"] for i in takeout.history()}
+    assert states == {"takeout-1.zip": "deleted", "takeout-2.zip": "kept"}
+
+    r = client.post("/api/takeout/done/delete", json={"names": None}).json()
+    assert r["deleted"] == 1
+    assert client.get("/api/takeout/done").json()["zips"] == []
+    assert (root / "Takeout" / "a.jpg").exists()  # 사진은 그대로
+
+
+def test_delete_done_rejects_path_escape(env):
+    root, client = env
+    victim = root / "keep.zip"
+    victim.write_bytes(b"x")
+    (root / takeout.DONE_DIRNAME).mkdir()
+    for bad in ["../keep.zip", "/etc/passwd", "..", "sub/../../keep.zip"]:
+        r = client.post("/api/takeout/done/delete", json={"names": [bad]}).json()
+        assert r["deleted"] == 0
+    assert victim.exists()
+
+
+def test_legacy_state_migrated_with_files_from_kept_zip(env):
+    root, _ = env
+    # 내역 기능 이전 방식으로 처리된 상태를 흉내 낸다
+    done = root / takeout.DONE_DIRNAME
+    done.mkdir()
+    (done / "takeout-old.zip").write_bytes(_make_zip({"Takeout/old.jpg": b"o"}))
+    (root / "Takeout").mkdir()
+    (root / "Takeout" / "old.jpg").write_bytes(b"o")
+    takeout._save_state({"takeout-old.zip": {"sig": "123-1", "added": 1, "ts": 1}})
+    [imp] = takeout.history()
+    assert (imp["zip_name"], imp["zip_state"], imp["stats"]["files"]) == \
+        ("takeout-old.zip", "kept", 1)
+    assert len(takeout.history()) == 1  # 두 번 옮기지 않는다

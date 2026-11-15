@@ -23,6 +23,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -98,9 +99,15 @@ def _safe_target(root: Path, member_name: str):
 
 
 def _extract_one(zip_path: Path, root: Path):
-    """zip 한 개를 root 아래로 머지 추출. (추가된 미디어 수, 건너뛴 수) 반환."""
+    """zip 한 개를 root 아래로 머지 추출.
+
+    반환: (추가된 미디어 수, 건너뛴 파일 수, [(미디어 상대경로, 새로 풀렸나)])
+    — 경로 목록은 처리 내역에서 이 zip 사진들의 색인 상태를 집계하는 데 쓴다.
+    """
     exts = _media_exts()
     added = skipped = 0
+    files = []
+    base = root.resolve()
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             if info.is_dir():
@@ -109,8 +116,11 @@ def _extract_one(zip_path: Path, root: Path):
             if target is None:
                 continue  # 경로 탈출 시도 무시
             is_media = target.suffix.lower() in exts
+            rel = str(target.relative_to(base))
             if target.exists():
                 skipped += 1
+                if is_media:
+                    files.append((rel, False))
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target, "wb") as dst:
@@ -121,7 +131,50 @@ def _extract_one(zip_path: Path, root: Path):
                     dst.write(chunk)
             if is_media:
                 added += 1
-    return added, skipped
+                files.append((rel, True))
+    return added, skipped, files
+
+
+def _now_iso(ts=None):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts or time.time()))
+
+
+def record_upload(zip_name, size):
+    """웹으로 받은 zip을 '대기' 내역으로 남긴다 — 처리 때 이 행을 이어 쓴다."""
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO takeout_imports (zip_name, size, source, uploaded_at, status,"
+            " zip_state) VALUES (?, ?, 'upload', ?, 'queued', 'waiting')",
+            (zip_name, size, _now_iso()))
+
+
+def _import_row_for(zip_path: Path):
+    """처리할 zip의 내역 행 id — 웹 업로드면 대기 행, 폴더에 넣은 거면 새로."""
+    with db.conn() as c:
+        r = c.execute(
+            "SELECT id FROM takeout_imports WHERE zip_name=? AND status='queued'"
+            " ORDER BY id DESC LIMIT 1", (zip_path.name,)).fetchone()
+        if r:
+            return r["id"]
+        st = zip_path.stat()
+        cur = c.execute(
+            "INSERT INTO takeout_imports (zip_name, size, source, uploaded_at, status,"
+            " zip_state) VALUES (?, ?, 'folder', ?, 'queued', 'waiting')",
+            (zip_path.name, st.st_size, _now_iso(st.st_mtime)))
+        return cur.lastrowid
+
+
+def _finish_import(import_id, *, status, added=0, skipped=0, files=(),
+                   error=None, zip_state=None, kept_name=None, now_ts=None):
+    with db.conn() as c:
+        c.execute(
+            "UPDATE takeout_imports SET processed_at=?, status=?, error=?, added=?,"
+            " skipped=?, zip_state=?, kept_name=? WHERE id=?",
+            (_now_iso(now_ts), status, error, added, skipped, zip_state, kept_name,
+             import_id))
+        c.executemany(
+            "INSERT OR REPLACE INTO takeout_import_files (import_id, path, is_new)"
+            " VALUES (?, ?, ?)", [(import_id, p, int(n)) for p, n in files])
 
 
 def process_pending(now_ts=None):
@@ -150,12 +203,15 @@ def process_pending(now_ts=None):
 
         for i, z in enumerate(pending, 1):
             _state["phase"] = f"압축 해제 {i}/{len(pending)}"
+            import_id = _import_row_for(z)
             try:
-                added, skipped = _extract_one(z, root)
+                added, skipped, files = _extract_one(z, root)
             except zipfile.BadZipFile:
                 state[z.name] = {"sig": _sig(z), "error": "손상된 zip",
                                  "added": 0, "ts": now_ts or int(time.time())}
                 _save_state(state)
+                _finish_import(import_id, status="error", error="손상된 zip",
+                               zip_state="waiting", now_ts=now_ts)
                 _state["done"] += 1
                 continue
 
@@ -167,21 +223,195 @@ def process_pending(now_ts=None):
                              "ts": now_ts or int(time.time()),
                              "kept": keep}
             _save_state(state)
+            zip_state, kept_name = "waiting", None
             try:
                 if keep:
                     dest = done_dir / z.name
                     if dest.exists():
                         dest = done_dir / f"{z.stem}-{int(time.time())}{z.suffix}"
                     z.rename(dest)
+                    zip_state, kept_name = "kept", dest.name
                 else:
                     z.unlink()
+                    zip_state = "deleted"
             except OSError:
                 pass  # 이동·삭제 실패해도 기록상 처리됨으로 재추출 안 함
+            _finish_import(import_id, status="ok", added=added, skipped=skipped,
+                           files=files, zip_state=zip_state, kept_name=kept_name,
+                           now_ts=now_ts)
             _state["done"] += 1
     finally:
         _state["running"] = False
         _state["phase"] = ""
     return total_added
+
+
+# ---------- 처리 내역 (어떤 zip이 무엇이 되었나) ----------
+
+def _migrate_legacy():
+    """내역 기능 이전에 처리된 zip(takeout_state.json에만 기록)을 내역으로 옮긴다.
+
+    _zips_done에 zip이 남아 있으면 목차(central directory)만 읽어 — 압축은 안
+    푼다 — 어떤 사진이 그 zip에서 나왔는지 복원한다.
+    """
+    state = _load_state()
+    if not state:
+        return
+    with db.conn() as c:
+        known = {r["zip_name"] for r in c.execute("SELECT zip_name FROM takeout_imports")}
+    root = _photos_dir()
+    done_dir = root / DONE_DIRNAME
+    exts = _media_exts()
+    base = root.resolve()
+    for name, rec in state.items():
+        if name in known:
+            continue
+        kept = done_dir / name
+        files = []
+        if kept.is_file():
+            try:
+                with zipfile.ZipFile(kept) as zf:
+                    for n in zf.namelist():
+                        t = _safe_target(root, n)
+                        if t is not None and t.suffix.lower() in exts and t.exists():
+                            files.append((str(t.relative_to(base)), True))
+            except (zipfile.BadZipFile, OSError):
+                pass
+        with db.conn() as c:
+            cur = c.execute(
+                "INSERT INTO takeout_imports (zip_name, size, source, uploaded_at,"
+                " status, zip_state) VALUES (?, ?, 'folder', NULL, 'queued', 'waiting')",
+                (name, int(str(rec.get("sig", "0-")).split("-")[0] or 0)))
+            iid = cur.lastrowid
+        _finish_import(
+            iid, status="error" if rec.get("error") else "ok", error=rec.get("error"),
+            added=rec.get("added") or 0, skipped=rec.get("skipped") or 0, files=files,
+            zip_state="kept" if kept.is_file() else "deleted",
+            kept_name=name if kept.is_file() else None, now_ts=rec.get("ts"))
+
+
+def _album_folder(path_nfc: str):
+    """'…/Google 포토/<앨범>/파일'이면 앨범명, 아니면 None (detect_albums와 같은 규칙)."""
+    parts = Path(path_nfc).parts
+    for i, p in enumerate(parts):
+        if p in _GPHOTO_DIRS and i + 2 <= len(parts) - 1:
+            folder = parts[i + 1]
+            return None if _NON_ALBUM.match(folder) else folder
+    return None
+
+
+def history():
+    """처리 내역 + zip별 사진들의 현재 색인 상태 집계 (최근 것부터)."""
+    import unicodedata
+    nfc = lambda s: unicodedata.normalize("NFC", s)  # noqa: E731 — macOS NFD 경로 대응
+    _migrate_legacy()
+    with db.conn() as c:
+        imports = [dict(r) for r in c.execute(
+            "SELECT * FROM takeout_imports ORDER BY id DESC")]
+        file_rows = c.execute(
+            "SELECT import_id, path, is_new FROM takeout_import_files").fetchall()
+        media = c.execute(
+            "SELECT id, path, type, lat, taken_at, trashed_at, live_of,"
+            " embedding IS NOT NULL AS has_emb, ocr_scanned,"
+            " (ocr_text IS NOT NULL AND TRIM(ocr_text) != '') AS has_text,"
+            " faces_scanned, (caption IS NOT NULL AND caption != '') AS has_caption"
+            " FROM media").fetchall()
+        face_rows = c.execute(
+            "SELECT media_id, COUNT(*) AS n, GROUP_CONCAT(DISTINCT person_id) AS persons"
+            " FROM faces GROUP BY media_id").fetchall()
+    by_path = {nfc(m["path"]): m for m in media}
+    faces = {r["media_id"]: r for r in face_rows}
+    album_names = {a["name"]: a["id"] for a in db.list_albums()}
+    files_by_import = {}
+    for r in file_rows:
+        files_by_import.setdefault(r["import_id"], []).append(r)
+
+    out = []
+    for imp in imports:
+        rows = files_by_import.get(imp["id"], [])
+        st = dict(files=len(rows), photos=0, videos=0, live=0, trashed=0, missing=0,
+                  gps=0, dated=0, embedded=0, ocr_done=0, ocr_text=0,
+                  faces_done=0, faces=0, persons=0, captioned=0,
+                  albums=0, albums_created=0)
+        persons, albums = set(), set()
+        for r in rows:
+            m = by_path.get(nfc(r["path"]))
+            if m is None:
+                st["missing"] += 1   # 아직 색인 전이거나 영구 삭제됨
+                continue
+            if m["trashed_at"]:
+                st["trashed"] += 1
+                continue
+            if m["live_of"]:
+                st["live"] += 1      # 라이브 포토의 움직이는 부분 — 사진에 딸림
+                continue
+            st["photos" if m["type"] == "image" else "videos"] += 1
+            st["gps"] += m["lat"] is not None
+            st["dated"] += bool(m["taken_at"])
+            st["embedded"] += bool(m["has_emb"])
+            st["ocr_done"] += bool(m["ocr_scanned"])
+            st["ocr_text"] += bool(m["has_text"])
+            st["faces_done"] += bool(m["faces_scanned"])
+            st["captioned"] += bool(m["has_caption"])
+            f = faces.get(m["id"])
+            if f:
+                st["faces"] += f["n"]
+                persons.update(p for p in (f["persons"] or "").split(",") if p)
+            a = _album_folder(nfc(r["path"]))
+            if a:
+                albums.add(a)
+        st["persons"] = len(persons)
+        st["albums"] = len(albums)
+        st["albums_created"] = sum(1 for a in albums if a in album_names)
+        imp["stats"] = st
+        imp["kept_size"] = None
+        if imp["zip_state"] == "kept" and imp["kept_name"]:
+            kp = _photos_dir() / DONE_DIRNAME / imp["kept_name"]
+            if kp.is_file():
+                imp["kept_size"] = kp.stat().st_size
+            else:
+                imp["zip_state"] = "deleted"  # 밖에서 지웠다
+        out.append(imp)
+    return out
+
+
+# ---------- 보관 중인 zip 정리 ----------
+
+def list_done():
+    d = _photos_dir() / DONE_DIRNAME
+    items = []
+    if d.is_dir():
+        for p in sorted(d.iterdir()):
+            if p.is_file() and p.suffix.lower() == ".zip":
+                st = p.stat()
+                items.append({"name": p.name, "size": st.st_size,
+                              "mtime": _now_iso(st.st_mtime)})
+    return items
+
+
+def delete_done(names=None):
+    """_zips_done의 zip 삭제. names=None이면 전부. 압축은 이미 풀려 있어 사진은 그대로."""
+    d = (_photos_dir() / DONE_DIRNAME).resolve()
+    targets = [i["name"] for i in list_done()] if names is None else names
+    deleted, freed = [], 0
+    for name in targets:
+        p = (d / name).resolve()
+        # 이름 하나만 — 경로 조작으로 _zips_done 밖을 지우지 못하게
+        if p.parent != d or p.suffix.lower() != ".zip" or not p.is_file():
+            continue
+        size = p.stat().st_size
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        deleted.append(name)
+        freed += size
+    if deleted:
+        with db.conn() as c:
+            c.executemany(
+                "UPDATE takeout_imports SET zip_state='deleted' WHERE kept_name=?",
+                [(n,) for n in deleted])
+    return {"ok": True, "deleted": len(deleted), "freed": freed}
 
 
 # ---------- 구글포토 앨범 구조 → PhotoNest 앨범 ----------
@@ -407,6 +637,7 @@ def upload_complete(upload_id: str):
             i += 1
         part.rename(dest)  # 같은 드라이브 안 — 복사 없이 즉시
         meta_path.unlink(missing_ok=True)
+        record_upload(dest.name, got)
     threading.Thread(target=indexer.build_index, daemon=True).start()
     return {"ok": True, "name": dest.name, "size": got}
 
@@ -418,3 +649,23 @@ def upload_cancel(upload_id: str):
         part.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
     return {"ok": True}
+
+
+class DoneDelete(BaseModel):
+    names: Optional[List[str]] = None  # None이면 전부
+
+
+@router.get("/api/takeout/history")
+def takeout_history():
+    return {"imports": history()}
+
+
+@router.get("/api/takeout/done")
+def takeout_done():
+    items = list_done()
+    return {"zips": items, "total": sum(i["size"] for i in items)}
+
+
+@router.post("/api/takeout/done/delete")
+def takeout_done_delete(body: DoneDelete):
+    return delete_done(body.names)

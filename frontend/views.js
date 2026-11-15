@@ -574,6 +574,8 @@ views.phone = async () => {
       <p class="small">수 GB 파일도 16MB씩 나눠 보내며, 중간에 끊기면 같은 파일을 다시 고르면 이어서 올립니다.</p>
       <div id="takeout-status" class="small"></div>
       <div id="takeout-albums"></div>
+      <div id="takeout-done"></div>
+      <div id="takeout-history"></div>
     </section>
   </div>`;
   new QRCode(document.getElementById("qr-box"), {
@@ -613,6 +615,8 @@ views.phone = async () => {
     }
   } catch (_) { /* 무시 */ }
   renderTakeoutAlbums();
+  renderTakeoutDone();
+  renderTakeoutHistory();
   wireTakeoutUpload();
 };
 
@@ -802,6 +806,8 @@ async function pollTakeoutProcessing(seenBusy = false, tries = 0) {
     } else {
       el.textContent = "✅ 압축 해제와 색인이 끝났습니다.";
       renderTakeoutAlbums();  // 새 앨범 폴더가 생겼을 수 있다
+      renderTakeoutDone();
+      renderTakeoutHistory();
       return;
     }
   } catch (_) { /* 잠시 뒤 다시 */ }
@@ -818,7 +824,7 @@ async function renderTakeoutAlbums() {
     if (!albums.length) return;
     const newN = albums.filter((a) => !a.album_exists).length;
     const rows = albums.map((a) =>
-      `<label class="ta-row"><input type="checkbox" data-name="${encodeURIComponent(a.name)}"${a.album_exists ? "" : " checked"}>
+      `<label class="ta-row"><input type="checkbox" class="ta-item" data-name="${encodeURIComponent(a.name)}" checked>
        <span>${esc(a.name)}</span>
        <small>${a.count}장${a.album_exists ? " · 이미 있음(사진만 보충)" : ""}</small></label>`
     ).join("");
@@ -827,14 +833,27 @@ async function renderTakeoutAlbums() {
         <strong>📁 구글포토 앨범 폴더 ${albums.length}개 발견${newN ? ` (새 앨범 ${newN}개)` : ""}</strong>
         <p class="small">테이크아웃의 폴더 구조가 앨범으로 묶여 있어요. 선택한 폴더를
         PhotoNest 앨범으로 만들까요? (연도별 자동 폴더는 제외됨)</p>
+        <label class="ta-row ta-all"><input type="checkbox" id="ta-all" checked>
+          <span>전체 선택</span><small id="ta-count"></small></label>
         <div class="ta-list">${rows}</div>
         <div class="ta-actions">
           <button id="ta-apply">✅ 선택한 앨범 만들기</button>
           <span id="ta-status" class="small"></span>
         </div>
       </div>`;
+    const items = [...box.querySelectorAll(".ta-item")];
+    const all = document.getElementById("ta-all");
+    const sync = () => {  // 일부만 선택되면 '전체 선택'을 반쯤 체크로
+      const n = items.filter((x) => x.checked).length;
+      all.checked = n === items.length;
+      all.indeterminate = n > 0 && n < items.length;
+      document.getElementById("ta-count").textContent = `${n}/${items.length}개 선택`;
+    };
+    all.onchange = () => { items.forEach((x) => { x.checked = all.checked; }); sync(); };
+    items.forEach((x) => { x.onchange = sync; });
+    sync();
     document.getElementById("ta-apply").onclick = async () => {
-      const names = [...box.querySelectorAll("input:checked")]
+      const names = items.filter((x) => x.checked)
         .map((x) => decodeURIComponent(x.dataset.name));
       if (!names.length) {
         document.getElementById("ta-status").textContent = "선택된 앨범이 없습니다.";
@@ -847,6 +866,100 @@ async function renderTakeoutAlbums() {
       speak(`앨범 ${r.created + r.updated}개를 정리했어요.`);
       renderTakeoutAlbums(); // '이미 있음' 상태 갱신
     };
+  } catch (_) { /* 무시 */ }
+}
+
+/* 처리 끝나 _zips_done에 보관 중인 zip — 사진은 이미 풀려 있어 지워도 된다 */
+async function renderTakeoutDone() {
+  const box = document.getElementById("takeout-done");
+  if (!box) return;
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  try {
+    const { zips, total } = await api.get("/api/takeout/done");
+    if (!zips.length) { box.innerHTML = ""; return; }
+    box.innerHTML =
+      `<div class="ta-box">
+        <strong>🗄️ 보관 중인 zip ${zips.length}개 · ${fmtBytes(total)}</strong>
+        <p class="small">압축 해제가 끝난 원본입니다. 지워도 사진·앨범·색인은 그대로 남습니다.</p>
+        <div class="ta-list">${zips.map((z) =>
+          `<div class="ta-row td-row"><span>${esc(z.name)}</span>
+           <small>${fmtBytes(z.size)} · ${z.mtime.slice(0, 10)}</small>
+           <button class="pn-btn td-del" data-name="${encodeURIComponent(z.name)}">삭제</button></div>`).join("")}
+        </div>
+        <div class="ta-actions">
+          <button class="pn-btn" id="td-all">🗑 전부 삭제 (${fmtBytes(total)} 확보)</button>
+          <span id="td-status" class="small"></span>
+        </div>
+      </div>`;
+    const del = async (names, label) => {
+      if (!confirm(`${label}을(를) 삭제할까요? 되돌릴 수 없습니다.\n(풀려 있는 사진은 그대로 남습니다)`)) return;
+      const r = await api.post("/api/takeout/done/delete", { names });
+      document.getElementById("td-status").textContent =
+        `✅ ${r.deleted}개 삭제 · ${fmtBytes(r.freed)} 확보`;
+      renderTakeoutDone();
+      renderTakeoutHistory();
+    };
+    box.querySelectorAll(".td-del").forEach((b) => {
+      b.onclick = () => {
+        const name = decodeURIComponent(b.dataset.name);
+        del([name], name);
+      };
+    });
+    document.getElementById("td-all").onclick = () => del(null, `보관 zip ${zips.length}개 전부`);
+  } catch (_) { /* 무시 */ }
+}
+
+/* 처리 내역 — 어떤 zip을 언제 어떻게 받아, 그 사진들이 지금 어디까지 색인됐는지 */
+async function renderTakeoutHistory() {
+  const box = document.getElementById("takeout-history");
+  if (!box) return;
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  try {
+    const { imports } = await api.get("/api/takeout/history");
+    if (!imports.length) { box.innerHTML = ""; return; }
+    const pct = (n, of) => of ? ` (${Math.round(n / of * 100)}%)` : "";
+    const card = (imp) => {
+      const s = imp.stats;
+      const media = s.photos + s.videos;
+      const status = imp.status === "queued" ? "⏳ 처리 대기"
+        : imp.status === "error" ? `❌ 실패 — ${esc(imp.error || "")}` : "✅ 처리 완료";
+      const zipState = imp.zip_state === "kept"
+        ? `보관 중${imp.kept_size ? ` (${fmtBytes(imp.kept_size)})` : ""}`
+        : imp.zip_state === "deleted" ? "삭제됨" : "photos 폴더에 있음";
+      const chip = (label, val, sub) =>
+        `<div class="th-chip"><span>${label}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+      const chips = imp.status !== "ok" ? "" : !s.files
+        ? `<p class="small">이 zip에서 나온 사진 목록이 없습니다 (내역 기능 이전에 처리되고 zip이 지워짐).</p>`
+        : `<div class="th-grid">
+            ${chip("🖼️ 사진", s.photos.toLocaleString(), s.live ? `라이브 ${s.live}` : "")}
+            ${chip("🎬 동영상", s.videos.toLocaleString())}
+            ${chip("📁 앨범 폴더", s.albums, `앨범 생성 ${s.albums_created}`)}
+            ${chip("📍 위치", s.gps.toLocaleString(), pct(s.gps, media))}
+            ${chip("📅 촬영일", s.dated.toLocaleString(), pct(s.dated, media))}
+            ${chip("🔎 AI 검색 색인", `${s.embedded}/${media}`, pct(s.embedded, media))}
+            ${chip("🔤 OCR", `${s.ocr_done}/${s.photos}`, `글자 발견 ${s.ocr_text}`)}
+            ${chip("🙂 얼굴 분석", `${s.faces_done}/${s.photos}`, `얼굴 ${s.faces} · 인물 ${s.persons}`)}
+            ${chip("📝 AI 설명", `${s.captioned}/${s.photos}`)}
+          </div>
+          ${s.missing || s.trashed ? `<p class="small">` +
+            (s.missing ? `아직 색인 전·삭제됨 ${s.missing}개 ` : "") +
+            (s.trashed ? `· 휴지통 ${s.trashed}개` : "") + `</p>` : ""}`;
+      return `<details class="th-item"${imp === imports[0] ? " open" : ""}>
+        <summary><strong>${esc(imp.zip_name)}</strong>
+          <small>${imp.size ? fmtBytes(imp.size) : ""} · ${imp.source === "upload" ? "웹 업로드" : "폴더에 직접"}
+          · ${esc((imp.processed_at || imp.uploaded_at || "").slice(0, 16))}</small></summary>
+        <p class="small">${status}${imp.status === "ok"
+          ? ` · 새로 추가 ${imp.added.toLocaleString()}개 · 이미 있음 ${(s.files - imp.added).toLocaleString()}개` : ""}
+          · zip: ${zipState}</p>
+        ${chips}
+      </details>`;
+    };
+    box.innerHTML =
+      `<div class="ta-box">
+        <strong>📜 테이크아웃 처리 내역 ${imports.length}건</strong>
+        <p class="small">OCR·얼굴·AI 설명은 압축 해제 뒤 백그라운드로 이어서 진행되므로 숫자가 점점 늘어납니다.</p>
+        ${imports.map(card).join("")}
+      </div>`;
   } catch (_) { /* 무시 */ }
 }
 

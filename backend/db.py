@@ -60,6 +60,29 @@ CREATE TABLE IF NOT EXISTS persons (
 );
 -- 폰이 업로드와 함께 보낸 임베딩 (색인 전 임시 보관 — 콘텐츠 해시 키).
 -- 인덱서가 해당 파일을 색인할 때 모델이 맞으면 media.embedding으로 옮긴다.
+-- 구글 테이크아웃 zip 처리 내역 — 어떤 zip을 언제 어떻게 받아 무엇이 풀렸는지.
+-- files에는 zip에서 나온 미디어의 라이브러리 상대경로를 남겨, 그 사진들의
+-- 색인 상태(OCR·얼굴·캡션 등)를 나중에 집계한다.
+CREATE TABLE IF NOT EXISTS takeout_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  zip_name TEXT NOT NULL,
+  size INTEGER,
+  source TEXT,              -- 'upload'(웹) | 'folder'(photos에 직접 넣음)
+  uploaded_at TEXT,
+  processed_at TEXT,
+  status TEXT,              -- 'queued' | 'ok' | 'error'
+  error TEXT,
+  added INTEGER DEFAULT 0,
+  skipped INTEGER DEFAULT 0,
+  zip_state TEXT,           -- 'waiting' | 'kept' | 'deleted'
+  kept_name TEXT            -- _zips_done 안의 실제 파일명
+);
+CREATE TABLE IF NOT EXISTS takeout_import_files (
+  import_id INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  is_new INTEGER DEFAULT 1,
+  PRIMARY KEY (import_id, path)
+);
 CREATE TABLE IF NOT EXISTS pending_embeddings (
   hash TEXT PRIMARY KEY,
   model TEXT NOT NULL,

@@ -524,12 +524,13 @@ def _make_thumb(img: Image.Image, item_id: str):
 
 def scan_files():
     PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-    skip_dir = "_zips_done"  # 처리 끝난 Takeout zip 보관함은 스캔 제외
+    # 처리 끝난 Takeout zip 보관함·업로드 중인 zip 조각은 스캔 제외
+    skip_dirs = {"_zips_done", "_zips_incoming"}
     return [
         p for p in sorted(PHOTOS_DIR.rglob("*"))
         if p.is_file() and p.suffix.lower() in IMAGE_EXTS | VIDEO_EXTS
         and not p.name.startswith(".")
-        and skip_dir not in p.parts
+        and not skip_dirs.intersection(p.parts)
     ]
 
 

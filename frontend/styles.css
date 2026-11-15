@@ -657,3 +657,8 @@ body.chat-hidden #chat-panel { display: none; }
 .lb-live-btn.waiting { opacity: .55; }
 .lb-live-btn.waiting::after { content: " 준비 중"; }
 #lb-media.live-on .lb-live-btn { background: rgba(255,204,0,.85); color: #000; }
+
+/* Takeout zip 업로드 */
+.to-keep { display: flex; gap: 6px; align-items: flex-start; margin: 10px 0 4px; cursor: pointer; }
+.to-keep input { margin-top: 2px; }
+#to-progress { margin-top: 10px; }

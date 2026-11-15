@@ -558,10 +558,20 @@ views.phone = async () => {
       <ol>
         <li><a href="https://takeout.google.com" target="_blank" rel="noopener">takeout.google.com</a>에서
             <strong>Google 포토</strong>만 선택해 내보내기 (zip으로 받기)</li>
-        <li>받은 <code>takeout-*.zip</code> 파일을 <code>photos/</code> 폴더에 넣기</li>
-        <li>끝! 자동으로 압축을 풀고 GPS·날짜를 살려 색인합니다
-            (처리된 zip은 <code>photos/_zips_done/</code>으로 옮겨집니다)</li>
+        <li>받은 <code>takeout-*.zip</code> 파일을 아래 버튼으로 올리기
+            (서버 PC라면 <code>photos/</code> 폴더에 직접 넣어도 됩니다)</li>
+        <li>끝! 자동으로 압축을 풀고 GPS·날짜를 살려 색인합니다</li>
       </ol>
+      <div class="btn-row">
+        <button class="pn-btn primary" id="to-pick">📦 테이크아웃 zip 올리기</button>
+        <button class="pn-btn" id="to-cancel" hidden>⏹ 중지</button>
+      </div>
+      <input type="file" id="to-input" accept=".zip,application/zip" multiple hidden>
+      <div class="pn-progress" id="to-progress" hidden><div class="pn-progress-bar" id="to-progress-bar"></div></div>
+      <div id="to-upload-status" class="small"></div>
+      <label class="small to-keep"><input type="checkbox" id="to-keep">
+        처리 후 원본 zip 보관 (<code>photos/_zips_done/</code>) — 끄면 압축 해제가 끝난 zip을 삭제해 공간을 아낍니다</label>
+      <p class="small">수 GB 파일도 16MB씩 나눠 보내며, 중간에 끊기면 같은 파일을 다시 고르면 이어서 올립니다.</p>
       <div id="takeout-status" class="small"></div>
       <div id="takeout-albums"></div>
     </section>
@@ -603,6 +613,7 @@ views.phone = async () => {
     }
   } catch (_) { /* 무시 */ }
   renderTakeoutAlbums();
+  wireTakeoutUpload();
 };
 
 /* 전용 앱 배포 상태 — 저장소가 가리키는 빌드를 서버가 실제로 갖고 있는지.
@@ -645,6 +656,156 @@ async function pollAppUpdate() {
     }
     renderAppStatus(a);
   } catch (_) { /* 무시 */ }
+}
+
+/* PC에서 받은 Takeout zip(수 GB) 업로드 — 16MB 조각 + 이어받기.
+   한 번에 보내면 잠깐의 끊김에도 처음부터 다시라서, 서버가 받은 지점(offset)을
+   확인하며 조각을 이어 붙인다. 같은 파일을 다시 고르면 받은 데까지 건너뛴다. */
+const TO_CHUNK = 16 * 1024 * 1024;
+
+function wireTakeoutUpload() {
+  const keep = document.getElementById("to-keep");
+  if (!keep) return;
+  api.get("/api/settings").then((s) => { keep.checked = s.takeout_keep_zip !== false; });
+  keep.onchange = async () => {
+    const s = await api.post("/api/settings", { takeout_keep_zip: keep.checked });
+    keep.checked = s.takeout_keep_zip !== false;
+  };
+  document.getElementById("to-pick").onclick = () => document.getElementById("to-input").click();
+  document.getElementById("to-input").onchange = (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) uploadTakeoutZips(files);
+  };
+}
+
+async function toFetchJson(url, opts) {
+  const r = await fetch(url, opts);
+  let data = {};
+  try { data = await r.json(); } catch (_) { /* 본문 없음 */ }
+  return { ok: r.ok, status: r.status, data };
+}
+
+async function uploadTakeoutZips(files) {
+  const $id = (x) => document.getElementById(x);
+  const status = (html) => { const el = $id("to-upload-status"); if (el) el.innerHTML = html; };
+  const bar = (pct) => { const el = $id("to-progress-bar"); if (el) el.style.width = pct + "%"; };
+  const zips = files.filter((f) => f.name.toLowerCase().endsWith(".zip"));
+  if (!zips.length) { status("zip 파일만 올릴 수 있습니다."); return; }
+
+  let cancelled = false;
+  let current = null;  // 진행 중인 업로드 id — 중지 시 서버 조각 삭제
+  $id("to-pick").disabled = true;
+  $id("to-cancel").hidden = false;
+  $id("to-progress").hidden = false;
+  $id("to-cancel").onclick = () => { cancelled = true; };
+
+  const total = zips.reduce((a, f) => a + f.size, 0);
+  let doneBytes = 0;   // 앞서 끝난 파일들의 바이트
+  const t0 = Date.now();
+  let sentThisRun = 0; // 속도 계산용 (이어받기로 건너뛴 양 제외)
+  const done = [];
+
+  try {
+    for (const [i, f] of zips.entries()) {
+      const label = `${i + 1}/${zips.length} ${f.name}`;
+      const init = await toFetchJson("/api/takeout/upload/init", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: f.name, size: f.size, last_modified: f.lastModified }),
+      });
+      if (!init.ok) throw new Error(init.data.detail || `시작 실패 (${init.status})`);
+      current = init.data.upload_id;
+      let offset = init.data.offset;
+      if (offset > 0) status(`↻ ${label} — ${fmtBytes(offset)}까지 받은 것을 이어서 올립니다`);
+
+      let fails = 0;
+      while (offset < f.size) {
+        if (cancelled) throw new Error("cancelled");
+        const end = Math.min(offset + TO_CHUNK, f.size);
+        let r;
+        try {
+          r = await toFetchJson(`/api/takeout/upload/${current}?offset=${offset}`, {
+            method: "PUT", headers: { "Content-Type": "application/octet-stream" },
+            body: f.slice(offset, end),
+          });
+        } catch (_) {
+          r = { ok: false, status: 0, data: {} };  // 네트워크 끊김
+        }
+        if (r.ok) {
+          sentThisRun += r.data.offset - offset;
+          offset = r.data.offset;
+          fails = 0;
+        } else if (r.status === 409 && r.data.detail && r.data.detail.offset != null) {
+          offset = r.data.detail.offset;  // 서버가 받은 지점에서 다시
+        } else if (r.status === 0 || r.status >= 500) {
+          if (++fails > 8) throw new Error("연결이 계속 끊깁니다. 잠시 후 같은 파일을 다시 고르면 이어서 올립니다.");
+          status(`⚠️ ${label} — 연결 끊김, 다시 시도 중… (${fails}/8)`);
+          await new Promise((res) => setTimeout(res, Math.min(30000, 1000 * 2 ** fails)));
+          continue;
+        } else {
+          throw new Error(r.data.detail || `업로드 실패 (${r.status})`);
+        }
+        const all = doneBytes + offset;
+        const secs = (Date.now() - t0) / 1000;
+        const speed = secs > 0 ? sentThisRun / secs : 0;
+        const eta = speed > 0 ? (total - all) / speed : 0;
+        bar((all / total) * 100);
+        status(`⬆️ ${label} — ${fmtBytes(offset)} / ${fmtBytes(f.size)}` +
+          (speed ? ` · ${fmtBytes(speed)}/s · 남은 시간 약 ${Math.ceil(eta / 60)}분` : ""));
+      }
+
+      status(`🔍 ${label} — zip 확인 중…`);
+      const fin = await toFetchJson(`/api/takeout/upload/${current}/complete`, { method: "POST" });
+      if (!fin.ok) throw new Error(fin.data.detail && fin.data.detail.offset == null
+        ? fin.data.detail : `마무리 실패 (${fin.status}) — 같은 파일을 다시 골라 주세요.`);
+      current = null;
+      doneBytes += f.size;
+      done.push(fin.data.name);
+    }
+    bar(100);
+    status(`✅ ${done.length}개 업로드 완료 — 압축 해제와 색인을 시작했습니다. 사진이 많으면 시간이 걸려요.`);
+    speak(`테이크아웃 파일 ${done.length}개를 받았어요. 정리를 시작할게요.`);
+    pollTakeoutProcessing();
+  } catch (e) {
+    if (e.message === "cancelled") {
+      if (current) await toFetchJson(`/api/takeout/upload/${current}`, { method: "DELETE" });
+      status("⏹ 업로드를 중지했습니다." + (done.length ? ` (앞서 끝난 ${done.length}개는 처리됩니다)` : ""));
+      if (done.length) pollTakeoutProcessing();
+    } else {
+      status(`❌ ${e.message}`);
+    }
+  } finally {
+    if ($id("to-pick")) {
+      $id("to-pick").disabled = false;
+      $id("to-cancel").hidden = true;
+    }
+  }
+}
+
+/* 업로드 뒤 압축 해제·색인 진행 상황 표시 — 화면을 떠나면 멈춘다 */
+async function pollTakeoutProcessing(seenBusy = false, tries = 0) {
+  const el = document.getElementById("takeout-status");
+  if (!el) return;
+  try {
+    const s = await api.get("/api/status");
+    const busy = s.takeout_running || s.indexing;
+    // 색인 스레드가 막 뜨는 중일 수 있다 — 한 번도 바쁜 걸 못 봤으면 몇 번 더 본다
+    if (!busy && !seenBusy && tries < 3) {
+      setTimeout(() => pollTakeoutProcessing(false, tries + 1), 2000);
+      return;
+    }
+    seenBusy = seenBusy || busy;
+    if (s.takeout_running) {
+      el.textContent = `📦 ${s.takeout_phase || "압축 해제"} 중… 새 사진 ${s.takeout_added || 0}개`;
+    } else if (s.indexing) {
+      el.textContent = `🗂️ 색인 중… ${s.phase || ""} ${s.total ? `${s.done}/${s.total}` : ""}`;
+    } else {
+      el.textContent = "✅ 압축 해제와 색인이 끝났습니다.";
+      renderTakeoutAlbums();  // 새 앨범 폴더가 생겼을 수 있다
+      return;
+    }
+  } catch (_) { /* 잠시 뒤 다시 */ }
+  setTimeout(() => pollTakeoutProcessing(seenBusy, tries), 3000);
 }
 
 /* 구글포토 앨범 폴더 감지 → 사용자에게 묻고 앨범 생성 */

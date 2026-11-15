@@ -22,7 +22,8 @@ from . import db, indexer
 router = APIRouter()
 
 BACKUP_DIR_NAME = "PhotoNestBackup"
-_SKIP_DIRS = {"_zips_done"}  # 처리 끝난 Takeout zip — 원본이 이미 풀려 있어 제외
+# 처리 끝난 Takeout zip(원본이 이미 풀려 있음)·업로드 중인 zip 조각은 제외
+_SKIP_DIRS = {"_zips_done", "_zips_incoming"}
 
 
 # ---------- 보관 통계 ----------

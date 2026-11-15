@@ -10,6 +10,8 @@ API 키는 평문 저장되므로 파일 권한을 0600으로 제한하고,
   openrouter_model    OpenRouter 모델 id (예: anthropic/claude-3.5-haiku)
   gemini_api_key      Google AI Studio 키 (폴백: env GEMINI_API_KEY, GOOGLE_API_KEY)
   gemini_model        Gemini 모델 id (예: gemini-2.5-flash-lite)
+  takeout_keep_zip    Takeout zip 압축 해제 후 원본 zip을 photos/_zips_done/에 보관할지
+                      (False면 해제 성공 시 삭제 — 같은 용량만큼 공간을 아낀다)
 """
 import json
 import os
@@ -37,6 +39,7 @@ _DEFAULTS = {
     "openrouter_model": DEFAULT_OPENROUTER_MODEL,
     "gemini_api_key": "",
     "gemini_model": DEFAULT_GEMINI_MODEL,
+    "takeout_keep_zip": True,
 }
 
 VALID_MODES = ("auto", "openrouter", "gemini", "local", "claude")
@@ -83,6 +86,8 @@ def save(patch: dict):
         if "gemini_model" in patch:
             current["gemini_model"] = (patch["gemini_model"] or "").strip() \
                 or DEFAULT_GEMINI_MODEL
+        if "takeout_keep_zip" in patch:
+            current["takeout_keep_zip"] = bool(patch["takeout_keep_zip"])
         for key_field in ("openrouter_api_key", "gemini_api_key"):
             if key_field in patch:
                 key = patch[key_field]
@@ -124,4 +129,5 @@ def public(cfg=None):
         "gemini_model": cfg["gemini_model"],
         "gemini_key_masked": mask_key(gkey),
         "gemini_key_set": bool(gkey),
+        "takeout_keep_zip": bool(cfg.get("takeout_keep_zip", True)),
     }

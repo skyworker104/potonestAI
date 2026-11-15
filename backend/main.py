@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (appdist, cleanup, db, immich, indexer, llm, playback, query_frame, remote,
-               search, storage, upload)
+               search, storage, takeout, upload)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -22,6 +22,7 @@ app.include_router(upload.router)
 app.include_router(storage.router)
 app.include_router(appdist.router)
 app.include_router(remote.router)
+app.include_router(takeout.router)
 # Immich 공식 앱 호환 계층 — /immich/api 아래에 따로 붙는다 (경로 충돌 방지).
 # 앱은 /.well-known/immich을 보고 그 주소를 찾아간다 (backend/immich/__init__.py).
 app.include_router(immich.router)
@@ -80,6 +81,7 @@ class SettingsUpdate(BaseModel):
     openrouter_model: Optional[str] = None
     gemini_api_key: Optional[str] = None
     gemini_model: Optional[str] = None
+    takeout_keep_zip: Optional[bool] = None
 
 
 class EngineTest(BaseModel):

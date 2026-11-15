@@ -126,6 +126,9 @@ MIGRATIONS = [
     "ALTER TABLE media ADD COLUMN live_video TEXT",
     "ALTER TABLE media ADD COLUMN live_of TEXT",
     "ALTER TABLE media ADD COLUMN live_checked INTEGER DEFAULT 0",
+    # 내역 기능 이전 기록은 업로드 방식을 모른다 — 'folder'로 옮겨졌던 것을 비운다.
+    # (새 기록의 'folder'는 uploaded_at에 zip 시각이 있어 구분된다. 멱등)
+    "UPDATE takeout_imports SET source=NULL WHERE source='folder' AND uploaded_at IS NULL",
 ]
 
 

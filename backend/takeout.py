@@ -6,10 +6,11 @@ photos 폴더(또는 PHOTOS_DIR)에 `takeout-*.zip`을 넣어두면, 색인 전�
      있으면 대신 삭제 (어느 쪽이든 재처리 안 됨)
   3. 처리 내역을 data/takeout_state.json에 기록
 
-PC에서 받은 zip(수 GB)은 브라우저로 올릴 수 있다 — /api/takeout/upload/*:
+PC에서 받은 zip(수 GB)은 브라우저로 올릴 수 있다(한 번에 최대 5개) — /api/takeout/upload/*:
 한 번에 보내면 와이파이가 잠깐만 끊겨도 처음부터 다시라서, 16MB 조각으로 나눠
 보내고 끊기면 받은 지점부터 이어 받는다. 조각은 photos/_zips_incoming/에 쌓이고
 다 받으면 zip인지 확인한 뒤 photos/로 옮겨 색인(=위 자동 처리)을 시작한다.
+여러 개를 고르면 전부 올린 뒤에 한 번에 압축 해제한다(아래 '보류').
 
 계정 직접 로그인/API 백업은 구글 정책상 불가하며, 메타데이터(GPS 등)를 보존하는
 유일한 합법 경로가 Takeout이므로 이 워크플로를 매끄럽게 만든다.
@@ -177,8 +178,59 @@ def _finish_import(import_id, *, status, added=0, skipped=0, files=(),
             " VALUES (?, ?, ?)", [(import_id, p, int(n)) for p, n in files])
 
 
+# ---------- 일괄 업로드 동안 압축 해제 미루기 ----------
+# 여러 zip을 올릴 때 하나 끝날 때마다 풀면 업로드와 압축 해제가 같은 SD 카드를
+# 두고 다퉈 둘 다 느려지고 색인도 조각조각 돈다. 그래서 일괄 업로드 중엔
+# 압축 해제를 보류(hold)하고, 마지막에 한 번에 처리한다.
+# 브라우저가 중간에 닫혀도 zip이 방치되지 않도록 보류는 조각이 끊긴 지
+# HOLD_SECONDS가 지나면 저절로 풀리고 그때 처리를 시작한다.
+HOLD_SECONDS = 15 * 60
+_hold = {"until": 0.0, "timer": None}
+
+
+def _hold_active():
+    return time.time() < _hold["until"]
+
+
+def _arm_hold_timer(delay):
+    def fire():
+        _hold["timer"] = None
+        if _hold["until"] == 0:
+            return  # 이미 처리 시작됨
+        if _hold_active():
+            _arm_hold_timer(_hold["until"] - time.time())  # 그새 연장됐다
+            return
+        _hold["until"] = 0
+        _start_processing()
+    t = threading.Timer(max(1.0, delay), fire)
+    t.daemon = True
+    _hold["timer"] = t
+    t.start()
+
+
+def hold_processing():
+    """일괄 업로드 중 — 압축 해제를 보류(또는 연장)."""
+    _hold["until"] = time.time() + HOLD_SECONDS
+    if _hold["timer"] is None:
+        _arm_hold_timer(HOLD_SECONDS)
+
+
+def release_hold():
+    _hold["until"] = 0
+
+
+def _start_processing():
+    from . import indexer
+    threading.Thread(target=indexer.build_index, daemon=True).start()
+
+
 def process_pending(now_ts=None):
-    """미처리 takeout zip을 모두 추출. 새로 추가된 미디어 파일 수 반환."""
+    """미처리 takeout zip을 모두 추출. 새로 추가된 미디어 파일 수 반환.
+
+    일괄 업로드 중(보류)이면 아무것도 하지 않는다 — 다 올라온 뒤 한 번에.
+    """
+    if _hold_active():
+        return 0
     with _lock:
         if _state["running"]:
             return 0
@@ -263,7 +315,7 @@ def _migrate_legacy():
         with db.conn() as c:
             cur = c.execute(
                 "INSERT INTO takeout_imports (zip_name, size, source, uploaded_at,"
-                " status, zip_state) VALUES (?, ?, 'folder', NULL, 'queued', 'waiting')",
+                " status, zip_state) VALUES (?, ?, NULL, NULL, 'queued', 'waiting')",
                 (name, int(str(rec.get("sig", "0-")).split("-")[0] or 0)))
             iid = cur.lastrowid
         _finish_import(
@@ -434,6 +486,10 @@ class UploadInit(BaseModel):
     name: str
     size: int
     last_modified: int = 0  # 같은 이름·크기라도 다른 파일이면 새로 받도록
+    # 일괄 업로드: 이 파일 포함 아직 안 올린 파일들의 합 / 전체 합 — 공간 확인용
+    batch_remaining: int = 0
+    batch_total: int = 0
+
 
 
 def _incoming_dir():
@@ -494,6 +550,17 @@ def upload_init(body: UploadInit):
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
     d = _incoming_dir()
     _cleanup_stale(d)
+    # 이미 올라와 처리됐거나 처리 대기 중인 zip(같은 이름·크기)은 다시 받지 않는다 —
+    # 일괄 업로드가 중간에 멈춘 뒤 전부 다시 고르면 앞의 것들을 건너뛰게
+    with db.conn() as c:
+        prev = c.execute(
+            "SELECT status, processed_at, uploaded_at FROM takeout_imports"
+            " WHERE zip_name IN (?, ?) AND size=? AND status != 'error'"
+            " ORDER BY id DESC LIMIT 1",
+            (body.name, _final_name(body.name), body.size)).fetchone()
+    if prev:
+        return {"already": True, "status": prev["status"],
+                "at": prev["processed_at"] or prev["uploaded_at"]}
     uid = _upload_id(body.name, body.size, body.last_modified)
     part, meta = _paths(uid)
     with _upload_lock:
@@ -502,7 +569,9 @@ def upload_init(body: UploadInit):
             part.unlink()
             offset = 0
         # 남은 조각 + 압축 해제분(대략 zip 크기)이 들어갈 자리가 있어야 한다
-        need = (body.size - offset) + body.size
+        # 일괄이면 남은 파일 전부 + 모두의 압축 해제분 (앞서 올린 zip은 이미 디스크에 있다)
+        remaining = max(body.batch_remaining, body.size)
+        need = (remaining - offset) + max(body.batch_total, body.size)
         free = shutil.disk_usage(d).free
         if free < need:
             gb = 1024 ** 3
@@ -523,6 +592,8 @@ async def upload_chunk(upload_id: str, offset: int, request: Request):
     함께 실제 offset을 알려 준다 — 클라이언트는 거기서부터 다시 보낸다."""
     part, meta_path = _paths(upload_id)
     meta = _read_meta(meta_path)
+    if _hold_active():
+        hold_processing()  # 일괄 업로드가 아직 진행 중 — 보류 연장
     current = part.stat().st_size if part.exists() else 0
     if offset != current:
         raise HTTPException(status_code=409, detail={"offset": current})
@@ -538,9 +609,12 @@ async def upload_chunk(upload_id: str, offset: int, request: Request):
 
 
 @router.post("/api/takeout/upload/{upload_id}/complete")
-def upload_complete(upload_id: str):
-    """다 받았으면 zip인지 확인하고 photos/로 옮긴 뒤 색인(압축 해제)을 시작."""
-    from . import indexer
+def upload_complete(upload_id: str, process: bool = True):
+    """다 받았으면 zip인지 확인하고 photos/로 옮긴다.
+
+    process=True면 바로 색인(압축 해제) 시작. False(일괄 업로드 중간)면 보류해
+    두었다가 /api/takeout/process에서 한 번에 처리한다.
+    """
     part, meta_path = _paths(upload_id)
     meta = _read_meta(meta_path)
     with _upload_lock:
@@ -564,8 +638,20 @@ def upload_complete(upload_id: str):
         part.rename(dest)  # 같은 드라이브 안 — 복사 없이 즉시
         meta_path.unlink(missing_ok=True)
         record_upload(dest.name, got)
-    threading.Thread(target=indexer.build_index, daemon=True).start()
+        if not process:
+            hold_processing()
+    if process:
+        release_hold()
+        _start_processing()
     return {"ok": True, "name": dest.name, "size": got}
+
+
+@router.post("/api/takeout/process")
+def takeout_process():
+    """일괄 업로드가 끝났다(또는 중지) — 올라온 zip을 한 번에 압축 해제·색인."""
+    release_hold()
+    _start_processing()
+    return {"ok": True, "pending": len(find_zips())}
 
 
 @router.delete("/api/takeout/upload/{upload_id}")

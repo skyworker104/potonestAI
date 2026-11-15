@@ -571,7 +571,8 @@ views.phone = async () => {
       <div id="to-upload-status" class="small"></div>
       <label class="small to-keep"><input type="checkbox" id="to-keep">
         처리 후 원본 zip 보관 (<code>photos/_zips_done/</code>) — 끄면 압축 해제가 끝난 zip을 삭제해 공간을 아낍니다</label>
-      <p class="small">수 GB 파일도 16MB씩 나눠 보내며, 중간에 끊기면 같은 파일을 다시 고르면 이어서 올립니다.</p>
+      <p class="small">한 번에 최대 5개까지 고를 수 있고, 여러 개면 <strong>전부 올린 뒤 한 번에 압축 해제</strong>합니다.
+      수 GB 파일도 16MB씩 나눠 보내며, 중간에 끊기면 같은 파일을 다시 고르면 이어서 올립니다.</p>
       <div id="takeout-status" class="small"></div>
       <div id="takeout-albums"></div>
       <div id="takeout-done"></div>
@@ -666,6 +667,7 @@ async function pollAppUpdate() {
    한 번에 보내면 잠깐의 끊김에도 처음부터 다시라서, 서버가 받은 지점(offset)을
    확인하며 조각을 이어 붙인다. 같은 파일을 다시 고르면 받은 데까지 건너뛴다. */
 const TO_CHUNK = 16 * 1024 * 1024;
+const TO_MAX_FILES = 5;
 
 function wireTakeoutUpload() {
   const keep = document.getElementById("to-keep");
@@ -694,8 +696,15 @@ async function uploadTakeoutZips(files) {
   const $id = (x) => document.getElementById(x);
   const status = (html) => { const el = $id("to-upload-status"); if (el) el.innerHTML = html; };
   const bar = (pct) => { const el = $id("to-progress-bar"); if (el) el.style.width = pct + "%"; };
-  const zips = files.filter((f) => f.name.toLowerCase().endsWith(".zip"));
+  const zips = files.filter((f) => f.name.toLowerCase().endsWith(".zip"))
+    .sort((a, b) => a.name.localeCompare(b.name));  // -001, -002 … 순서대로
   if (!zips.length) { status("zip 파일만 올릴 수 있습니다."); return; }
+  if (zips.length > TO_MAX_FILES) {
+    status(`한 번에 최대 ${TO_MAX_FILES}개까지 올릴 수 있습니다 (${zips.length}개 선택됨).`);
+    return;
+  }
+  // 여러 개면 전부 올린 뒤 한 번에 압축 해제 — 업로드와 해제가 SD 카드를 두고 다투지 않게
+  const batch = zips.length > 1;
 
   let cancelled = false;
   let current = null;  // 진행 중인 업로드 id — 중지 시 서버 조각 삭제
@@ -709,15 +718,25 @@ async function uploadTakeoutZips(files) {
   const t0 = Date.now();
   let sentThisRun = 0; // 속도 계산용 (이어받기로 건너뛴 양 제외)
   const done = [];
+  const skipped = [];  // 이미 올린 적 있는 zip
 
   try {
     for (const [i, f] of zips.entries()) {
       const label = `${i + 1}/${zips.length} ${f.name}`;
       const init = await toFetchJson("/api/takeout/upload/init", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: f.name, size: f.size, last_modified: f.lastModified }),
+        body: JSON.stringify({
+          name: f.name, size: f.size, last_modified: f.lastModified,
+          batch_remaining: zips.slice(i).reduce((a, z) => a + z.size, 0),
+          batch_total: total,
+        }),
       });
       if (!init.ok) throw new Error(init.data.detail || `시작 실패 (${init.status})`);
+      if (init.data.already) {  // 이미 올라온 zip — 다시 보내지 않는다
+        skipped.push(f.name);
+        doneBytes += f.size;
+        continue;
+      }
       current = init.data.upload_id;
       let offset = init.data.offset;
       if (offset > 0) status(`↻ ${label} — ${fmtBytes(offset)}까지 받은 것을 이어서 올립니다`);
@@ -754,12 +773,13 @@ async function uploadTakeoutZips(files) {
         const speed = secs > 0 ? sentThisRun / secs : 0;
         const eta = speed > 0 ? (total - all) / speed : 0;
         bar((all / total) * 100);
-        status(`⬆️ ${label} — ${fmtBytes(offset)} / ${fmtBytes(f.size)}` +
+        status(`⬆️ ${batch ? "1단계 업로드 " : ""}${label} — ${fmtBytes(offset)} / ${fmtBytes(f.size)}` +
           (speed ? ` · ${fmtBytes(speed)}/s · 남은 시간 약 ${Math.ceil(eta / 60)}분` : ""));
       }
 
       status(`🔍 ${label} — zip 확인 중…`);
-      const fin = await toFetchJson(`/api/takeout/upload/${current}/complete`, { method: "POST" });
+      const fin = await toFetchJson(
+        `/api/takeout/upload/${current}/complete?process=${batch ? "false" : "true"}`, { method: "POST" });
       if (!fin.ok) throw new Error(fin.data.detail && fin.data.detail.offset == null
         ? fin.data.detail : `마무리 실패 (${fin.status}) — 같은 파일을 다시 골라 주세요.`);
       current = null;
@@ -767,17 +787,27 @@ async function uploadTakeoutZips(files) {
       done.push(fin.data.name);
     }
     bar(100);
-    status(`✅ ${done.length}개 업로드 완료 — 압축 해제와 색인을 시작했습니다. 사진이 많으면 시간이 걸려요.`);
+    const skipNote = skipped.length
+      ? `<br>↷ 이미 올린 적 있는 zip ${skipped.length}개는 건너뛰었습니다: ${skipped.join(", ")}` : "";
+    if (!done.length) {
+      status(`ℹ️ 새로 올릴 zip이 없습니다.${skipNote}`);
+      return;
+    }
+    if (batch) await toFetchJson("/api/takeout/process", { method: "POST" });
+    status(`✅ ${done.length}개 업로드 완료 — 이제 ${batch ? "한 번에 " : ""}압축 해제와 색인을 시작합니다. 사진이 많으면 시간이 걸려요.${skipNote}`);
     speak(`테이크아웃 파일 ${done.length}개를 받았어요. 정리를 시작할게요.`);
     pollTakeoutProcessing();
   } catch (e) {
+    // 일괄 업로드가 중간에 멈춰도 다 올라간 zip은 바로 처리한다
+    if (batch && done.length) await toFetchJson("/api/takeout/process", { method: "POST" });
+    const tail = done.length ? ` 앞서 다 올라간 ${done.length}개는 압축 해제를 시작합니다.` : "";
     if (e.message === "cancelled") {
       if (current) await toFetchJson(`/api/takeout/upload/${current}`, { method: "DELETE" });
-      status("⏹ 업로드를 중지했습니다." + (done.length ? ` (앞서 끝난 ${done.length}개는 처리됩니다)` : ""));
-      if (done.length) pollTakeoutProcessing();
+      status("⏹ 업로드를 중지했습니다." + tail);
     } else {
-      status(`❌ ${e.message}`);
+      status(`❌ ${e.message}` + tail);
     }
+    if (done.length) pollTakeoutProcessing();
   } finally {
     if ($id("to-pick")) {
       $id("to-pick").disabled = false;
@@ -934,7 +964,7 @@ async function renderTakeoutHistory() {
       ].filter(Boolean).join(" → ");
       return `<div class="th-item">
         <div class="th-head"><strong>${esc(imp.zip_name)}</strong>
-          <small>${imp.size ? fmtBytes(imp.size) : ""} · ${imp.source === "upload" ? "웹 업로드" : "폴더에 직접"}</small></div>
+          <small>${imp.size ? fmtBytes(imp.size) : ""}${imp.source ? ` · ${imp.source === "upload" ? "웹 업로드" : "폴더에 직접"}` : ""}</small></div>
         <div class="small">${result}</div>
         <div class="small th-meta">${times}${times ? " · " : ""}${zip}</div>
       </div>`;

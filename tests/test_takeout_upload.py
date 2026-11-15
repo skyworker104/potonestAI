@@ -34,11 +34,15 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_FILE", data / "photonest.db")
     monkeypatch.setattr(settings, "_FILE", data / "app" / "settings.json")
     monkeypatch.setattr(takeout, "STATE_FILE", data / "takeout_state.json")
-    monkeypatch.setattr(indexer, "build_index", lambda *a, **k: None)
+    started = []
+    monkeypatch.setattr(indexer, "build_index", lambda *a, **k: started.append(1))
+    monkeypatch.setattr(takeout, "_hold", {"until": 0.0, "timer": None})
     db.init()
     app = FastAPI()
     app.include_router(takeout.router)
-    return root, TestClient(app)
+    client = TestClient(app)
+    client.started = started  # 색인(압축 해제) 시작 요청 횟수
+    return root, client
 
 
 def _upload(client, name, blob, chunk, last_modified=1):
@@ -233,3 +237,75 @@ def test_legacy_state_migrated(env):
     assert (imp["zip_name"], imp["zip_state"], imp["added"], imp["skipped"], imp["existing"]) == \
         ("takeout-old.zip", "kept", 1, 3, None)
     assert len(takeout.history()) == 1  # 두 번 옮기지 않는다
+
+
+# ---------- 일괄 업로드: 다 올린 뒤 한 번에 압축 해제 ----------
+
+def test_batch_defers_extraction_until_process(env):
+    root, client = env
+    names = []
+    for k in range(3):
+        blob = _make_zip({f"Takeout/Google 포토/b{k}.jpg": bytes([k])})
+        uid = _upload(client, f"takeout-b-00{k}.zip", blob, chunk=64, last_modified=k)
+        r = client.post(f"/api/takeout/upload/{uid}/complete?process=false")
+        names.append(r.json()["name"])
+        # 업로드 도중 다른 이유(폰 업로드 등)로 색인이 돌아도 압축 해제는 보류
+        assert takeout.process_pending() == 0
+    assert client.started == []
+    assert len(takeout.find_zips()) == 3
+
+    client.post("/api/takeout/process")
+    assert client.started == [1]
+    assert takeout.process_pending() == 3  # 한 번의 처리에서 셋 다
+    assert all(i["status"] == "ok" for i in takeout.history())
+
+
+def test_hold_expires_and_processing_starts(env, monkeypatch):
+    """브라우저가 일괄 업로드 중간에 닫혀도 올라온 zip이 방치되지 않는다."""
+    _, client = env
+    monkeypatch.setattr(takeout, "HOLD_SECONDS", 0.05)
+    takeout.hold_processing()
+    assert takeout._hold_active()
+    import time
+    for _ in range(50):
+        if client.started:
+            break
+        time.sleep(0.1)
+    assert client.started == [1] and not takeout._hold_active()
+
+
+def test_already_uploaded_zip_is_skipped(env):
+    _, client = env
+    blob = _make_zip({"Takeout/a.jpg": b"a"})
+    uid = _upload(client, "takeout-s-001.zip", blob, chunk=64)
+    client.post(f"/api/takeout/upload/{uid}/complete")
+    r = client.post("/api/takeout/upload/init",
+                    json={"name": "takeout-s-001.zip", "size": len(blob)}).json()
+    assert r["already"] is True and r["status"] == "queued"
+    # 크기가 다르면 다른 파일 — 받는다
+    r = client.post("/api/takeout/upload/init",
+                    json={"name": "takeout-s-001.zip", "size": len(blob) + 1}).json()
+    assert "upload_id" in r
+
+
+def test_batch_space_check_counts_all_files(env, monkeypatch):
+    _, client = env
+    gb = 1024 ** 3
+    monkeypatch.setattr(takeout.shutil, "disk_usage",
+                        lambda p: type("U", (), {"free": 10 * gb})())
+    one = {"name": "takeout-1.zip", "size": 2 * gb}
+    assert client.post("/api/takeout/upload/init", json=one).status_code == 200
+    # 2GB × 5개 = 10GB 남은 업로드 + 10GB 압축 해제 → 10GB로는 모자람
+    r = client.post("/api/takeout/upload/init",
+                    json={**one, "name": "takeout-2.zip",
+                          "batch_remaining": 10 * gb, "batch_total": 10 * gb})
+    assert r.status_code == 507
+
+
+def test_legacy_source_is_cleared_by_migration(env):
+    with db.conn() as c:
+        c.execute("INSERT INTO takeout_imports (zip_name, source, uploaded_at)"
+                  " VALUES ('old.zip', 'folder', NULL), ('new.zip', 'folder', '2026-11-15')")
+    db.init()
+    src = {i["zip_name"]: i["source"] for i in takeout.history()}
+    assert src == {"old.zip": None, "new.zip": "folder"}

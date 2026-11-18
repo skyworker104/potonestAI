@@ -475,6 +475,25 @@ def content_hash(path: Path):
     return h.hexdigest()
 
 
+def pixel_hash(img: Image.Image):
+    """완전히 같은 사진 탐지용: 방향을 바로잡은 RGB 픽셀 전체의 md5.
+    파일 이름·형식·메타데이터(EXIF)가 달라도 픽셀이 한 점도 다르지 않으면 같은 값이다.
+    (JPEG로 다시 압축한 사본은 픽셀이 조금 달라져 같지 않다 — '비슷한 사진'의 몫)"""
+    rgb = img.convert("RGB")
+    h = hashlib.md5(f"{rgb.width}x{rgb.height}".encode())
+    h.update(rgb.tobytes())
+    return h.hexdigest()
+
+
+def _pixel_hash_file(path: Path):
+    """파일을 열어 픽셀 해시 — 못 읽으면 ''."""
+    try:
+        with Image.open(path) as img:
+            return pixel_hash(ImageOps.exif_transpose(img))
+    except Exception:
+        return ""
+
+
 # ---------- 썸네일 ----------
 
 def _fourcc(cap):
@@ -568,8 +587,15 @@ def _index_file(p: Path, existing):
         img = Image.open(p)
         # EXIF Orientation을 픽셀에 반영 (썸네일이 돌아가 보이는 문제 방지)
         img = ImageOps.exif_transpose(img)
-    w, h = img.convert("RGB").size
+    rgb = img.convert("RGB")
+    w, h = rgb.size
     _make_thumb(img, item_id)
+    pixels = None
+    if not is_video:
+        try:
+            pixels = pixel_hash(rgb)
+        except Exception:
+            pixels = ""
 
     meta = {
         "id": item_id, "path": rel, "type": "video" if is_video else "image",
@@ -577,6 +603,7 @@ def _index_file(p: Path, existing):
         "width": w, "height": h, "duration": round(duration, 1),
         "sig": sig, "hash": content_hash(p),
         "added_at": file_added_at(p), "video_codec": codec,
+        "pixel_hash": pixels,
     }
     db.upsert_media(meta)
 
@@ -798,6 +825,19 @@ def _run_pipeline(force):
                 _state["done"] = 0
                 for mid, lat, lon in pending:
                     db.set_place_name(mid, geoname.lookup(lat, lon))
+                    _state["done"] += 1
+        except Exception:
+            pass
+
+        # 픽셀 해시를 세기 전에 색인된 사진 — 한 번 열어 채운다 ('완전히 동일한 사진')
+        try:
+            pending = db.images_missing_pixel_hash()
+            if pending:
+                _state["phase"] = "같은 사진 확인"
+                _state["total"] = len(pending)
+                _state["done"] = 0
+                for mid, rel in pending:
+                    db.set_pixel_hash(mid, _pixel_hash_file(PHOTOS_DIR / rel))
                     _state["done"] += 1
         except Exception:
             pass

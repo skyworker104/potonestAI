@@ -398,6 +398,9 @@ views.trash = async () => {
 const CLEANUP_SECTIONS = [
   { key: "duplicates", title: "똑같은 사진", grouped: true,
     desc: "같은 파일이 여러 번 들어온 사진이에요. 한 장만 남기면 돼요." },
+  { key: "identical", title: "완전히 동일한 사진", grouped: true,
+    desc: "파일 이름·형식·촬영 정보(EXIF)는 달라도 화면에 보이는 픽셀이 한 점도 다르지 않은 사진이에요. " +
+          "즐겨찾기·앨범 사진이나 위치정보가 남은 원본을 남기도록 추천해요." },
   { key: "similar", title: "비슷한 연속 사진", grouped: true,
     desc: "몇 초 사이에 거의 같게 여러 장 찍은 사진이에요. 즐겨찾기·앨범 사진이나 가장 선명한 사진을 남기도록 추천해요." },
   { key: "screenshots", title: "스크린샷",
@@ -432,10 +435,14 @@ views.duplicates = async () => {
 
   const total = sections.reduce((n, s) => n + s.picks.length, 0);
   $("#view-count").textContent = total ? `정리 추천 ${total}장` : "";
+  const pendingNote = data.identical_pending
+    ? `<p class="cleanup-note">'완전히 동일한 사진'은 아직 확인하는 중이에요 (${data.identical_pending}장 남음). 색인이 끝나면 다시 열어 보세요.</p>`
+    : "";
   if (!total) {
-    c.innerHTML = `<div class="empty">정리할 사진이 없어요 🎉</div>`;
+    c.innerHTML = `<div class="empty">정리할 사진이 없어요 🎉</div>` + pendingNote;
     return;
   }
+  if (pendingNote) c.insertAdjacentHTML("beforeend", pendingNote);
   if (sections[0].picks.length) addTopbarBtn("🧹 똑같은 사진 모두 지우기", cleanAllDuplicates);
   if (!data.ai) {
     c.insertAdjacentHTML("beforeend",

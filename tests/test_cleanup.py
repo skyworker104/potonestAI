@@ -40,12 +40,13 @@ def lib(tmp_path, monkeypatch):
     yield cameras
 
 
-def add(mid, vec=None, ocr="", taken="2026-10-01T10:00:00", path=None, fav=0, hash_=None):
+def add(mid, vec=None, ocr="", taken="2026-10-01T10:00:00", path=None, fav=0, hash_=None,
+        pix="", lat=None, added=None):
     with db.conn() as c:
         c.execute(
-            "INSERT INTO media (id, path, type, taken_at, favorite, hash, ocr_text) "
-            "VALUES (?, ?, 'image', ?, ?, ?, ?)",
-            (mid, path or f"{mid}.jpg", taken, fav, hash_ or mid, ocr))
+            "INSERT INTO media (id, path, type, taken_at, favorite, hash, ocr_text, "
+            "pixel_hash, lat, added_at) VALUES (?, ?, 'image', ?, ?, ?, ?, ?, ?, ?)",
+            (mid, path or f"{mid}.jpg", taken, fav, hash_ or mid, ocr, pix, lat, added))
     if vec is not None:
         db.set_embedding(mid, np.asarray(vec, dtype=np.float32), "fake")
 
@@ -116,3 +117,56 @@ def test_has_camera_exif(tmp_path):
     assert not indexer.has_camera_exif(shot)
     assert indexer.has_camera_exif(photo)
     assert not indexer.has_camera_exif(tmp_path / "missing.jpg")
+
+
+def test_identical_pixels_grouped_apart_from_file_copies(lib):
+    # 원본(위치정보 있음) · EXIF를 지운 사본 · 다른 이름으로 다시 저장한 PNG — 픽셀은 같다
+    add("orig", pix="P1", lat=33.4, added="2026-10-02T00:00:00")
+    add("stripped", pix="P1", added="2026-10-01T00:00:00")
+    add("png", pix="P1", path="png.png", added="2026-10-03T00:00:00")
+    add("orig_copy", pix="P1", hash_="orig")            # 같은 파일 사본 — '똑같은 사진'에서
+    add("fav_a", pix="P2", added="2026-10-05T00:00:00", fav=1)
+    add("fav_b", pix="P2", added="2026-10-01T00:00:00")
+    add("alone", pix="P3")
+    add("same_file", pix="P4")
+    add("same_file2", pix="P4", hash_="same_file")      # 파일까지 같으면 이 묶음엔 없다
+    add("unread", pix="")                               # 못 읽은 사진은 묶지 않는다
+    add("unread2", pix="")
+    r = cleanup.suggestions()
+    groups = sorted([[it["id"] for it in g] for g in r["identical"]])
+    assert groups == [["fav_a", "fav_b"], ["orig", "stripped", "png"]]
+    assert sorted(ids(g) for g in r["duplicates"]) == [["orig", "orig_copy"],
+                                                       ["same_file", "same_file2"]]
+    assert r["identical_pending"] == 0
+
+
+def test_identical_pixels_not_repeated_as_similar(lib):
+    add("a", NORMAL, taken="2026-10-01T10:00:00", pix="P")
+    add("b", NORMAL, taken="2026-10-01T10:00:05", pix="P")
+    r = cleanup.suggestions()
+    assert r["similar"] == [] and len(r["identical"]) == 1
+
+
+def test_pixel_hash_ignores_format_and_exif(tmp_path):
+    img = Image.new("RGB", (16, 16), (10, 120, 200))
+    img.putpixel((3, 3), (255, 0, 0))
+    plain = tmp_path / "plain.png"
+    img.save(plain)
+    tagged = tmp_path / "tagged.png"
+    img.save(tagged, exif=piexif.dump({"0th": {piexif.ImageIFD.Make: b"Apple"}}))
+    other = tmp_path / "other.png"
+    img2 = img.copy()
+    img2.putpixel((0, 0), (0, 0, 0))
+    img2.save(other)
+    h = indexer._pixel_hash_file
+    assert h(plain) == h(tagged) != h(other)
+    assert h(tmp_path / "missing.jpg") == ""
+
+
+def test_backfill_counts_missing(lib):
+    with db.conn() as c:
+        c.execute("INSERT INTO media (id, path, type) VALUES ('old', 'old.jpg', 'image')")
+    assert db.count_missing_pixel_hash() == 1
+    assert db.images_missing_pixel_hash() == [("old", "old.jpg")]
+    db.set_pixel_hash("old", None)
+    assert db.count_missing_pixel_hash() == 0

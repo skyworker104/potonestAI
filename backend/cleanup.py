@@ -1,7 +1,8 @@
 """정리 추천 — 지워도 될 만한 사진을 골라 '중복' 화면에 보여 준다.
 
-네 묶음:
+다섯 묶음:
 - 똑같은 사진: 내용 해시가 같은 파일 (db.duplicate_groups)
+- 완전히 동일한 사진: 파일은 다르지만(이름·형식·EXIF) 픽셀이 한 점도 다르지 않은 사진
 - 비슷한 연속 사진: 30초 안에 연달아 찍었고 임베딩이 거의 같은 사진 — 한 장만 남긴다
 - 스크린샷: 파일 이름이 스크린샷이거나, 카메라 정보(EXIF)가 없고 화면 캡처처럼 보이며 글자가 있는 이미지
 - 문서·화면을 찍은 사진: 문서·영수증·화이트보드·모니터처럼 보이고 글자가 많은 사진
@@ -91,6 +92,26 @@ def _keeper_order(group):
                                         -_sharpness(r["id"])))
 
 
+def _identical_groups(images):
+    """픽셀 해시가 같은 사진 묶음. 같은 파일의 사본은 '똑같은 사진'에서 다루므로
+    파일 해시마다 한 장씩만 넣고, 서로 다른 파일이 두 개 이상인 묶음만 남긴다.
+    남길 사진: 즐겨찾기·앨범 → 위치정보가 남은 원본 → 먼저 들어온 사진."""
+    by_pixels = {}
+    for r in images:
+        if r["pixel_hash"]:
+            by_pixels.setdefault(r["pixel_hash"], []).append(r)
+    order = lambda r: (not r["favorite"], not r["in_album"], r["lat"] is None,
+                       r["added_at"] or "9999")
+    groups = []
+    for g in by_pixels.values():
+        files = {}
+        for r in sorted(g, key=order):
+            files.setdefault(r["hash"] or r["id"], r)
+        if len(files) > 1:
+            groups.append(sorted(files.values(), key=order))
+    return groups
+
+
 def _similar_groups(rows, pos, mat, threshold):
     """촬영 시각순으로 이웃한 사진끼리 비교해 연속 촬영 묶음을 만든다."""
     shots = sorted((r for r in rows if r["id"] in pos and r["taken_at"]),
@@ -104,6 +125,7 @@ def _similar_groups(rows, pos, mat, threshold):
             gap = None
         same = (gap is not None and 0 <= gap <= SIMILAR_SECONDS
                 and r["hash"] != prev["hash"]   # 똑같은 파일은 '똑같은 사진'에서 다룬다
+                and not (r["pixel_hash"] and r["pixel_hash"] == prev["pixel_hash"])
                 and float(mat[pos[r["id"]]] @ mat[pos[prev["id"]]]) >= threshold)
         if same:
             cur.append(r)
@@ -124,6 +146,8 @@ def suggestions():
 
     result = {
         "duplicates": db.duplicate_groups(),
+        "identical": [[item(r) for r in g] for g in _identical_groups(images)],
+        "identical_pending": db.count_missing_pixel_hash(),
         "similar": [], "screenshots": [], "documents": [],
         "ai": embedder.available() and indexer.ai_available(),
     }

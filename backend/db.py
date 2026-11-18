@@ -129,6 +129,10 @@ MIGRATIONS = [
     # 내역 기능 이전 기록은 업로드 방식을 모른다 — 'folder'로 옮겨졌던 것을 비운다.
     # (새 기록의 'folder'는 uploaded_at에 zip 시각이 있어 구분된다. 멱등)
     "UPDATE takeout_imports SET source=NULL WHERE source='folder' AND uploaded_at IS NULL",
+    # 완전히 같은 사진 탐지용 픽셀 해시 (indexer.pixel_hash) — 파일 해시(hash)와 달리
+    # 파일 이름·형식·EXIF가 달라도 픽셀이 같으면 같다. NULL = 아직 안 셈, '' = 못 읽음.
+    "ALTER TABLE media ADD COLUMN pixel_hash TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_media_pixel_hash ON media(pixel_hash)",
 ]
 
 
@@ -177,16 +181,18 @@ def upsert_media(meta, embedding=None):
     with conn() as c:
         c.execute(
             """INSERT INTO media (id, path, type, taken_at, lat, lon, width, height,
-                                  duration, sig, hash, embedding, added_at, video_codec)
+                                  duration, sig, hash, embedding, added_at, video_codec,
+                                  pixel_hash)
                VALUES (:id, :path, :type, :taken_at, :lat, :lon, :width, :height,
-                       :duration, :sig, :hash, :embedding, :added_at, :video_codec)
+                       :duration, :sig, :hash, :embedding, :added_at, :video_codec,
+                       :pixel_hash)
                ON CONFLICT(id) DO UPDATE SET
                  path=:path, taken_at=:taken_at, lat=:lat, lon=:lon,
                  width=:width, height=:height, duration=:duration, sig=:sig,
-                 hash=:hash, video_codec=:video_codec,
+                 hash=:hash, video_codec=:video_codec, pixel_hash=:pixel_hash,
                  embedding=COALESCE(:embedding, embedding)""",
             dict(meta, embedding=emb, added_at=added,
-                 video_codec=meta.get("video_codec")),
+                 video_codec=meta.get("video_codec"), pixel_hash=meta.get("pixel_hash")),
         )
 
 
@@ -449,7 +455,8 @@ def cleanup_rows():
     """정리 추천용 활성 미디어 — 해시·OCR 글자 수·앨범 포함 여부까지 (최근 촬영부터)."""
     with conn() as c:
         return c.execute(
-            f"""SELECT {MEDIA_COLS}, hash, length(trim(coalesce(ocr_text, ''))) AS ocr_len,
+            f"""SELECT {MEDIA_COLS}, hash, pixel_hash,
+                       length(trim(coalesce(ocr_text, ''))) AS ocr_len,
                        EXISTS(SELECT 1 FROM album_items ai WHERE ai.media_id = media.id)
                          AS in_album
                 FROM media WHERE trashed_at IS NULL AND live_of IS NULL
@@ -709,6 +716,30 @@ def media_missing_added():
 def set_added_at(media_id, iso):
     with conn() as c:
         c.execute("UPDATE media SET added_at=? WHERE id=?", (iso, media_id))
+
+
+def images_missing_pixel_hash():
+    """픽셀 해시를 아직 안 센 활성 사진 (id, path) 목록 — 기능 도입 전에 색인된 사진."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT id, path FROM media WHERE trashed_at IS NULL AND type='image' "
+            "AND pixel_hash IS NULL"
+        ).fetchall()
+    return [(r["id"], r["path"]) for r in rows]
+
+
+def count_missing_pixel_hash():
+    with conn() as c:
+        return c.execute(
+            "SELECT COUNT(*) FROM media WHERE trashed_at IS NULL AND type='image' "
+            "AND pixel_hash IS NULL"
+        ).fetchone()[0]
+
+
+def set_pixel_hash(media_id, value):
+    """못 읽은 사진도 ''로 기록해 다시 세지 않는다 (파일이 바뀌면 색인이 새로 센다)."""
+    with conn() as c:
+        c.execute("UPDATE media SET pixel_hash=? WHERE id=?", (value or "", media_id))
 
 
 def set_place_name(media_id, name):
